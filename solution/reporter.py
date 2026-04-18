@@ -413,6 +413,69 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
 .op-cards::-webkit-scrollbar-track{{background:{C['panel2']};border-radius:3px}}
 .op-cards::-webkit-scrollbar-thumb{{background:{C['border']};border-radius:3px}}
 
+/* Comentarios del analista en cards */
+.op-card-comment-btn{{
+  background:{C['panel']};color:{C['muted']};border:1px solid {C['border']};
+  border-radius:4px;width:26px;height:22px;cursor:pointer;font-size:.75rem;
+  display:inline-flex;align-items:center;justify-content:center;padding:0;
+  transition:all .15s;margin-left:6px
+}}
+.op-card-comment-btn:hover{{background:{C['blue']};color:#fff;border-color:{C['blue']}}}
+.op-card-comment-btn.has-comment{{background:rgba({_hex_to_rgb(C['blue'])},.15);color:{C['blue']};border-color:{C['blue']}}}
+.op-card-comment{{
+  margin-top:6px;padding:6px 8px;font-size:.72rem;font-style:italic;
+  color:{C['text']};background:rgba({_hex_to_rgb(C['blue'])},.08);
+  border-left:3px solid {C['blue']};border-radius:4px;line-height:1.4;
+  word-break:break-word
+}}
+.op-card-comment b{{color:{C['blue']};font-style:normal;margin-right:4px}}
+
+/* Botón export comentarios (sticky top of right panel) */
+.op-export-btn{{
+  background:linear-gradient(90deg,#3a1f6e 0%,#1f3a6e 100%);
+  color:{C['text']};border:1px solid {C['purple']};border-radius:6px;
+  padding:7px 10px;cursor:pointer;font-size:.72rem;font-weight:600;
+  letter-spacing:.03em;transition:all .15s;margin-bottom:4px;width:100%
+}}
+.op-export-btn:hover{{background:linear-gradient(90deg,#4a2a7e 0%,#2a4a7e 100%);
+                    border-color:#d2a0ff}}
+
+/* Modal de comentario */
+.cmt-modal-backdrop{{
+  position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:2000;
+  display:none;align-items:center;justify-content:center;padding:20px
+}}
+.cmt-modal-backdrop.show{{display:flex}}
+.cmt-modal{{
+  background:{C['panel']};border:1px solid {C['border']};border-radius:10px;
+  padding:20px;max-width:520px;width:100%;max-height:80vh;overflow:auto;
+  box-shadow:0 8px 40px rgba(0,0,0,.6)
+}}
+.cmt-modal-title{{
+  color:{C['blue']};font-size:1rem;font-weight:700;margin-bottom:6px
+}}
+.cmt-modal-sub{{color:{C['muted']};font-size:.78rem;margin-bottom:12px}}
+.cmt-modal-textarea{{
+  width:100%;min-height:120px;background:{C['panel2']};color:{C['text']};
+  border:1px solid {C['border']};border-radius:6px;padding:10px;
+  font-family:inherit;font-size:.85rem;line-height:1.5;resize:vertical;
+  box-sizing:border-box
+}}
+.cmt-modal-textarea:focus{{outline:none;border-color:{C['blue']}}}
+.cmt-modal-actions{{
+  display:flex;gap:8px;margin-top:12px;justify-content:flex-end
+}}
+.cmt-modal-btn{{
+  padding:7px 14px;border-radius:5px;cursor:pointer;font-size:.78rem;
+  font-weight:600;border:1px solid transparent
+}}
+.cmt-modal-btn.primary{{background:{C['blue']};color:#fff;border-color:{C['blue']}}}
+.cmt-modal-btn.primary:hover{{background:#3a8ee0}}
+.cmt-modal-btn.danger{{background:transparent;color:{C['red']};border-color:{C['red']}}}
+.cmt-modal-btn.danger:hover{{background:rgba({_hex_to_rgb(C['red'])},.1)}}
+.cmt-modal-btn.secondary{{background:transparent;color:{C['muted']};border-color:{C['border']}}}
+.cmt-modal-btn.secondary:hover{{color:{C['text']};border-color:{C['muted']}}}
+
 /* ═══════════════════ RESPONSIVE BREAKPOINTS ═══════════════════ */
 
 /* TABLETS y laptops chicos: <= 1024px */
@@ -593,6 +656,21 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   </div>
 </div>
 
+<!-- Modal de comentario de analista (para pausas del operador) -->
+<div class="cmt-modal-backdrop" id="cmt-modal" onclick="if(event.target===this)cmtClose()">
+  <div class="cmt-modal">
+    <div class="cmt-modal-title" id="cmt-title">💬 Comentario del analista</div>
+    <div class="cmt-modal-sub" id="cmt-sub">Evento #— · ——</div>
+    <textarea class="cmt-modal-textarea" id="cmt-text"
+              placeholder="Describí qué pasó en este evento: causa observada, contexto operacional, decisiones tomadas, etc."></textarea>
+    <div class="cmt-modal-actions">
+      <button class="cmt-modal-btn danger" id="cmt-delete" onclick="cmtDelete()">🗑 Borrar</button>
+      <button class="cmt-modal-btn secondary" onclick="cmtClose()">Cancelar</button>
+      <button class="cmt-modal-btn primary" onclick="cmtSave()">💾 Guardar</button>
+    </div>
+  </div>
+</div>
+
 <div class="app">
 
 <!-- SIDEBAR -->
@@ -700,7 +778,11 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
       <div class="op-hdr">
         EVENTOS DETECTADOS
         <span id="op-ev-total" style="color:var(--muted);font-weight:400;margin-left:8px">0</span>
+        <span id="op-ev-comments" style="color:var(--blue);font-weight:400;margin-left:4px;display:none"></span>
       </div>
+      <button class="op-export-btn" onclick="opExportComments()">
+        📋  Exportar comentarios del analista
+      </button>
       <div class="op-filter">
         <button onclick="opFilter('all', this)" class="active" data-f="all">Todos</button>
         <button onclick="opFilter('INACTIVIDAD_INJUSTIFICADA', this)" data-f="INACTIVIDAD_INJUSTIFICADA">⚠ Injust.</button>
@@ -1684,7 +1766,7 @@ function seekToTime(ts) {{ seekToAlert(ts); }}
 }})();
 
 // ═══════════════════════════════════════════════════════════════
-// VISTA OPERADOR — Video grande + cards de eventos
+// VISTA OPERADOR — Video grande + cards de eventos + comentarios
 // Inspirada en jevi/dashboard.py pero en HTML puro.
 // ═══════════════════════════════════════════════════════════════
 const OP_STATES_CFG = {{
@@ -1694,6 +1776,132 @@ const OP_STATES_CFG = {{
 }};
 let opFilterState = 'all';
 let opActiveCard = null;
+
+// ─── COMENTARIOS DEL ANALISTA (persistentes con localStorage) ────────────────
+// Se persisten por sesión (session_label) para que cada análisis tenga sus propios
+// comentarios. El storage key incluye la duración de la sesión como fingerprint.
+const OP_COMMENTS_KEY = 'jebi_pauses_comments_v1_' + (SESSION_METRICS.duration_s | 0);
+let opComments = {{}};  // {{ cardIdx: "texto" }}
+let cmtCurrentIdx = -1; // índice del evento en edición
+
+function _opLoadComments() {{
+  try {{
+    const raw = localStorage.getItem(OP_COMMENTS_KEY);
+    if (raw) opComments = JSON.parse(raw);
+  }} catch(e) {{ console.warn('load comments:', e); }}
+}}
+function _opSaveComments() {{
+  try {{
+    localStorage.setItem(OP_COMMENTS_KEY, JSON.stringify(opComments));
+  }} catch(e) {{ console.warn('save comments:', e); }}
+}}
+
+function opAddComment(idx) {{
+  cmtCurrentIdx = idx;
+  const ev = FUSION_EVENTS[idx];
+  if (!ev) return;
+  const cfg = OP_STATES_CFG[ev.estado] || OP_STATES_CFG['INACTIVIDAD_INJUSTIFICADA'];
+
+  document.getElementById('cmt-title').textContent =
+    '💬  Comentario del analista';
+  document.getElementById('cmt-sub').innerHTML =
+    '<b>Evento #' + (idx+1) + '</b> · ' +
+    cfg.icon + ' ' + cfg.label + ' · ' +
+    ev.duracion_s.toFixed(1) + 's · ' +
+    _opFmtTime(ev.tiempo_inicio_s) + ' → ' + _opFmtTime(ev.tiempo_fin_s);
+
+  const textarea = document.getElementById('cmt-text');
+  textarea.value = opComments[idx] || '';
+
+  // Mostrar/ocultar botón delete según si ya hay comentario
+  document.getElementById('cmt-delete').style.display =
+    opComments[idx] ? 'inline-block' : 'none';
+
+  document.getElementById('cmt-modal').classList.add('show');
+  setTimeout(() => textarea.focus(), 50);
+}}
+
+function cmtClose() {{
+  document.getElementById('cmt-modal').classList.remove('show');
+  cmtCurrentIdx = -1;
+}}
+
+function cmtSave() {{
+  if (cmtCurrentIdx < 0) return;
+  const text = document.getElementById('cmt-text').value.trim();
+  if (text) {{
+    opComments[cmtCurrentIdx] = text;
+  }} else {{
+    delete opComments[cmtCurrentIdx];
+  }}
+  _opSaveComments();
+  _opRenderCards();
+  _opUpdateCommentCounter();
+  cmtClose();
+}}
+
+function cmtDelete() {{
+  if (cmtCurrentIdx < 0) return;
+  if (!confirm('¿Borrar el comentario de este evento?')) return;
+  delete opComments[cmtCurrentIdx];
+  _opSaveComments();
+  _opRenderCards();
+  _opUpdateCommentCounter();
+  cmtClose();
+}}
+
+function _opUpdateCommentCounter() {{
+  const n = Object.keys(opComments).length;
+  const el = document.getElementById('op-ev-comments');
+  if (el) {{
+    if (n > 0) {{
+      el.textContent = '· 💬 ' + n;
+      el.style.display = 'inline';
+    }} else {{
+      el.style.display = 'none';
+    }}
+  }}
+}}
+
+function opExportComments() {{
+  const lines = [
+    '=== REPORTE DE COMENTARIOS DEL ANALISTA — JEBI 2026 ===',
+    '',
+    'Sesión: ' + (SESSION_METRICS.duration_s).toFixed(1) + 's total',
+    'Eventos totales: ' + FUSION_EVENTS.length,
+    'Eventos comentados: ' + Object.keys(opComments).length,
+    '',
+    '--- EVENTOS CON COMENTARIO ---',
+    '',
+  ];
+  let n = 0;
+  FUSION_EVENTS.forEach((ev, i) => {{
+    if (!opComments[i]) return;
+    n++;
+    const cfg = OP_STATES_CFG[ev.estado] || OP_STATES_CFG['INACTIVIDAD_INJUSTIFICADA'];
+    lines.push('#' + (i+1) + '  ' + cfg.icon + ' ' + cfg.label);
+    lines.push('   Tiempo:    ' + _opFmtTime(ev.tiempo_inicio_s) +
+                ' → ' + _opFmtTime(ev.tiempo_fin_s) +
+                '  (' + ev.duracion_s.toFixed(1) + 's)');
+    lines.push('   Comentario: ' + opComments[i]);
+    lines.push('');
+  }});
+  if (n === 0) {{
+    alert('Todavía no hay comentarios. Click en ✎ sobre cualquier evento para agregar uno.');
+    return;
+  }}
+  const txt = lines.join('\\n');
+  navigator.clipboard.writeText(txt).then(() => {{
+    alert('✓ ' + n + ' comentario(s) copiados al portapapeles');
+  }}).catch(() => {{
+    // Fallback: abrir ventana con el texto
+    const win = window.open('', '_blank');
+    if (win) {{
+      win.document.write('<pre style="padding:20px;font-family:monospace;white-space:pre-wrap">' +
+                           txt.replace(/</g, '&lt;') + '</pre>');
+    }}
+  }});
+}}
 
 function _opFmtTime(s) {{
   const m = Math.floor(s / 60);
@@ -1727,23 +1935,40 @@ function _opRenderCards() {{
   filtered.forEach((ev) => {{
     const cfg = OP_STATES_CFG[ev.estado] || OP_STATES_CFG['INACTIVIDAD_INJUSTIFICADA'];
     const realIdx = FUSION_EVENTS.indexOf(ev);
+    const comment = opComments[realIdx] || '';
+    const hasCmt = comment.length > 0;
     const card = document.createElement('div');
     card.className = 'op-card';
     card.dataset.idx = realIdx;
     card.dataset.tstart = ev.tiempo_inicio_s;
+
+    const cmtBtnTitle = hasCmt ? 'Ver/editar comentario' : 'Agregar comentario';
     card.innerHTML = `
       <div class="op-card-row">
         <span class="op-card-num">#${{realIdx + 1}}</span>
-        <span class="op-card-dur" style="color:${{cfg.color}}">⏱ ${{ev.duracion_s.toFixed(1)}}s</span>
+        <div style="display:flex;align-items:center;gap:4px">
+          <span class="op-card-dur" style="color:${{cfg.color}}">⏱ ${{ev.duracion_s.toFixed(1)}}s</span>
+          <button class="op-card-comment-btn ${{hasCmt ? 'has-comment' : ''}}"
+                  title="${{cmtBtnTitle}}"
+                  onclick="event.stopPropagation(); opAddComment(${{realIdx}})">
+            ${{hasCmt ? '💬' : '✎'}}
+          </button>
+        </div>
       </div>
       <div class="op-card-time">${{_opFmtTime(ev.tiempo_inicio_s)}} → ${{_opFmtTime(ev.tiempo_fin_s)}}</div>
       <div class="op-card-pill" style="background:rgba(${{_rgbFromHex(cfg.color)}},.15);color:${{cfg.color}};border:1px solid ${{cfg.color}}">
         ${{cfg.icon}} ${{cfg.label}}
       </div>
+      ${{hasCmt ? `<div class="op-card-comment"><b>💬</b>${{_escapeHtml(comment)}}</div>` : ''}}
     `;
     card.addEventListener('click', () => _opSeekTo(ev.tiempo_inicio_s));
     container.appendChild(card);
   }});
+}}
+
+function _escapeHtml(s) {{
+  return String(s).replace(/[&<>"']/g, c =>
+    ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c]);
 }}
 
 function _rgbFromHex(hex) {{
@@ -1841,6 +2066,10 @@ function _opHighlightCard(idx) {{
 function _opInitVideo() {{
   const v = document.getElementById('op-video');
   if (!v) return;
+
+  // Cargar comentarios persistidos en localStorage
+  _opLoadComments();
+  _opUpdateCommentCounter();
 
   // Contadores en las estadísticas
   const nInj = FUSION_EVENTS.filter(e => e.estado === 'INACTIVIDAD_INJUSTIFICADA').length;
