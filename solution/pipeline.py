@@ -10,9 +10,11 @@ from imu_processor import load_imu, detect_cycles, cycles_to_dataframe
 from video_processor import process_video_events
 from metrics import (compute_efficiency_profiles, compute_truck_loads,
                      compute_transport_metrics, build_realtime_timeline,
-                     compute_wear_score, extract_spill_events)
+                     compute_wear_score, extract_spill_events,
+                     compute_idle_index)
 from ipo_metrics import compute_ipo
 from reporter import generate_report
+from visual_validator import run_visual_validation, enhance_idle_index
 
 INPUT_FILES = {
     'left':  ['shovel_left.mp4',
@@ -56,23 +58,31 @@ def run(inputs_dir, outputs_dir):
     print(f'  Mini-ciclos      : {len(mini)}')
     print(f'  Wait events      : {len(waits)}')
 
-    # ── 3. Video (backtracking + YOLO26 + OCR) ────────────────────────────────
+    # ── 3. Video (identificación liviana - solo si ENABLE_OCR env está seteado) ──
+    # NOTA: OCR/YOLO de camiones es OPTIONAL (v3 → usa optical flow, no OCR).
+    # Dejamos este paso como nice-to-have para la vista Live, solo si está
+    # explícitamente habilitado. Por default lo saltamos para respetar <10min.
     left_path  = find_input(inputs_dir, INPUT_FILES['left'])
     right_path = find_input(inputs_dir, INPUT_FILES['right'])
     video_events: list = []
     ocr_events:   list = []
     dust_index:   dict = {}
-    if left_path and right_path:
-        print('\n[3/6] Backtracking video + YOLO26 + OCR...')
-        video_result = process_video_events(left_path, right_path, cycles, waits)
-        video_events = video_result.get('events', [])
-        ocr_events   = video_result.get('ocr_events', [])
-        dust_index   = video_result.get('dust_index', {})
-        print(f'  Eventos video : {len(video_events)}')
-        print(f'  OCR readings  : {len(ocr_events)}')
-        print(f'  Dust index avg: {dust_index.get("avg", 0):.1f}%')
+
+    enable_ocr = os.environ.get('JEBI_ENABLE_OCR', '0') == '1'
+    if left_path and right_path and enable_ocr:
+        print('\n[3/6] Backtracking video + YOLO26 + OCR (OPCIONAL)...')
+        try:
+            video_result = process_video_events(left_path, right_path, cycles, waits)
+            video_events = video_result.get('events', [])
+            ocr_events   = video_result.get('ocr_events', [])
+            dust_index   = video_result.get('dust_index', {})
+            print(f'  Eventos video : {len(video_events)}')
+            print(f'  OCR readings  : {len(ocr_events)}')
+        except Exception as e:
+            print(f'  [pipeline] OCR/YOLO legacy falló: {e} (seguimos con optical flow)')
     else:
-        print('\n[3/6] Video no disponible')
+        print('\n[3/6] OCR/YOLO legacy deshabilitado (seteá JEBI_ENABLE_OCR=1 para activarlo)')
+        print('       → El pipeline nuevo usa optical flow para validación visual')
 
     # ── 4. Eficiencias y alertas ─────────────────────────────────────────────
     print('\n[4/6] Calculando eficiencias, alertas, wear y desperdicios...')
@@ -81,14 +91,52 @@ def run(inputs_dir, outputs_dir):
     transport        = compute_transport_metrics(truck_events, waits, df.attrs['duration_s'])
     wear_score       = compute_wear_score(alerts, df, cycles)
     spill_events     = extract_spill_events(alerts)
-    ipo              = compute_ipo(cycles, waits, alerts, transport, metrics)
+    idle_index       = compute_idle_index(waits, cycles, df.attrs['duration_s'])
     print(f'  Alertas generadas: {len(alerts)}')
     print(f'  Camiones trackados: {transport.n_trucks_served}')
     print(f'  Wear score total: {wear_score.get("total_score", 0):.1f}')
     print(f'  Spill events     : {len(spill_events)}')
-    print(f'  IPO              : {ipo.ipo:.3f} ({ipo.band})')
+    print(f'  ITI (ocio IMU)   : {idle_index["iti_pct"]:.1f}% ({idle_index["band"]})')
+    print(f'    Total ocio     : {idle_index["total_idle_s"]:.0f}s de {idle_index["total_duration_s"]:.0f}s')
+    print(f'    N eventos ocio : {idle_index["n_events"]} (criticos: {idle_index["critical_waits_n"]})')
+    print(f'    Wait mas largo : {idle_index["longest_wait_s"]:.1f}s')
+
+    # ── 4b. Validación visual por OPTICAL FLOW (dual-source) ─────────────────
+    # INSIGHT CLAVE: la cámara está sobre la pala. Motion de cámara = motion de pala.
+    # Cruzamos con el IMU para obtener idle/productivo VERIFICADO.
+    visual_validation = {}
+    if left_path:
+        print('\n[4b/6] Validación visual por optical flow (cruce IMU + cámara)...')
+        try:
+            visual_validation = run_visual_validation(
+                video_path  = left_path,
+                duration_s  = df.attrs['duration_s'],
+                wait_events = waits,
+                cycles      = cycles,
+                interval_s  = 1.0,   # 1 sample/s sobre video completo (muy rápido)
+            )
+            # Enriquecer el idle_index con la validación
+            idle_index = enhance_idle_index(idle_index, visual_validation)
+            print(f'  Confianza global : {idle_index.get("confidence", "N/A")} '
+                  f'(acuerdo {idle_index.get("agreement_pct", 0):.1f}%)')
+            print(f'  Idle VERIFICADO  : {idle_index.get("verified_idle_s", 0):.0f}s '
+                  f'({idle_index.get("verified_iti_pct", 0):.1f}% del total)')
+            print(f'  Alertas productiv: {len(idle_index.get("productivity_alerts", []))}')
+            print(f'  Discrepancias    : {idle_index.get("disagreements_n", 0)}')
+        except Exception as e:
+            print(f'  [pipeline] Validación visual fallo: {e}')
+            import traceback; traceback.print_exc()
+            visual_validation = {}
+
+    # ── 4c. IPO (con validación visual integrada) ────────────────────────────
+    ipo = compute_ipo(cycles, waits, alerts, transport, metrics,
+                       visual_validation=visual_validation)
+    print(f'  IPO (IMU)        : {ipo.ipo:.3f} ({ipo.band})')
     print(f'    η_R = {ipo.eta_R:.3f}  η_M = {ipo.eta_M:.3f}  DA = {ipo.DA:.3f}')
     print(f'    α_W = {ipo.alpha_W:.3f}  α_DE = {ipo.alpha_DE:.3f}  C_T = {ipo.c_T:.1f}')
+    if ipo.visual_agreement_pct > 0:
+        print(f'  IPO VALIDATED    : {ipo.ipo_validated:.3f} (η_M_val = {ipo.eta_M_validated:.3f})')
+        print(f'    Confianza: {ipo.confidence}  acuerdo={ipo.visual_agreement_pct:.1f}%')
 
     # ── 5. Timeline real-time ─────────────────────────────────────────────────
     print('\n[5/6] Construyendo timeline real-time...')
@@ -144,8 +192,14 @@ def run(inputs_dir, outputs_dir):
         timeline=timeline,
         ocr_events=ocr_events, wear_score=wear_score,
         spill_events=spill_events, dust_index=dust_index,
-        ipo=ipo,
+        ipo=ipo, idle_index=idle_index,
+        visual_validation=visual_validation,
     )
+
+    # Exportar validación visual como JSON independiente
+    if visual_validation:
+        with open(os.path.join(outputs_dir, 'visual_validation.json'), 'w') as f:
+            json.dump(visual_validation, f, indent=2, default=str)
 
     # OCR readings CSV
     if ocr_events:

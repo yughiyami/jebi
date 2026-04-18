@@ -32,6 +32,14 @@ PHASE_COLORS = dict(
 )
 
 
+def _is_mini_profile(p, cycles) -> bool:
+    """Helper: verifica si un EfficiencyProfile corresponde a un mini-cycle."""
+    for c in cycles:
+        if c.cycle_id == p.cycle_id:
+            return c.is_mini_cycle
+    return False
+
+
 def generate_report(df_imu, cycles, wait_events, metrics,
                     video_events, df_cycles, df_waits, output_dir,
                     profiles=None, alerts=None,
@@ -39,7 +47,8 @@ def generate_report(df_imu, cycles, wait_events, metrics,
                     timeline=None,
                     ocr_events=None, wear_score=None,
                     spill_events=None, dust_index=None,
-                    ipo=None,
+                    ipo=None, idle_index=None,
+                    visual_validation=None,
                     session_label='DIG - EX-5600') -> str:
 
     html = _build(df_imu, cycles, wait_events, metrics,
@@ -48,7 +57,8 @@ def generate_report(df_imu, cycles, wait_events, metrics,
                   timeline or [], session_label,
                   ocr_events or [], wear_score or {},
                   spill_events or [], dust_index or {},
-                  ipo)
+                  ipo, idle_index or {},
+                  visual_validation or {})
 
     path = os.path.join(output_dir, 'dashboard.html')
     with open(path, 'w', encoding='utf-8') as f:
@@ -62,7 +72,7 @@ def generate_report(df_imu, cycles, wait_events, metrics,
 def _build(df_imu, cycles, wait_events, metrics, video_events,
            profiles, alerts, truck_events, transport, timeline, label,
            ocr_events=None, wear_score=None, spill_events=None, dust_index=None,
-           ipo=None):
+           ipo=None, idle_index=None, visual_validation=None):
 
     t   = df_imu.timestamp_s.values.tolist()
     ax  = df_imu.ax.values.tolist()
@@ -76,6 +86,18 @@ def _build(df_imu, cycles, wait_events, metrics, video_events,
 
     full = [c for c in cycles if not c.is_mini_cycle]
     now  = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # BUGFIX: promedios de sesión para gauges (así no inician en 50% placeholder).
+    # Se calculan desde profiles (ciclos completos, excluye mini-cycles ruidosos).
+    full_profiles = [p for p in profiles if not _is_mini_profile(p, cycles)]
+    if full_profiles:
+        avg_coll = float(np.mean([p.collection_eff_pct  for p in full_profiles]))
+        avg_man  = float(np.mean([p.maneuver_eff_pct    for p in full_profiles]))
+        avg_pos  = float(np.mean([p.positioning_eff_pct for p in full_profiles]))
+        avg_disc = float(np.mean([p.discharge_eff_pct   for p in full_profiles]))
+        avg_oee  = float(np.mean([p.cycle_eff_pct       for p in full_profiles]))
+    else:
+        avg_coll = avg_man = avg_pos = avg_disc = avg_oee = 0.0
 
     # JSON para JS
     tl_json       = json.dumps(timeline)
@@ -92,16 +114,14 @@ def _build(df_imu, cycles, wait_events, metrics, video_events,
     ) for te in truck_events])
 
     # HTML building blocks
-    kpis_html   = _kpi_cards(metrics, transport)
-    eff_html    = _efficiency_table(profiles)
-    trucks_html = _trucks_table(truck_events)
-    waits_html  = _waits_table(wait_events)
-    thumbs_html = _thumbs(video_events)
-    ocr_html    = _ocr_grid(ocr_events or [])
-    bpmn_html   = _bpmn_coverage(metrics, transport, wear_score or {},
-                                  spill_events or [], dust_index or {}, alerts)
-    help_html   = _help_content()
-    ipo_html    = _ipo_view(ipo)
+    kpis_html    = _kpi_cards(metrics, transport)
+    eff_html     = _efficiency_table(profiles)
+    waits_html   = _waits_table(wait_events)
+    help_html    = _help_content()
+    ipo_html     = _ipo_view(ipo)
+    idle_html    = _idle_view(idle_index or {})
+    insights_html = _insights_view(metrics, idle_index or {}, ipo, transport,
+                                    visual_validation or {})
 
     return f"""<!DOCTYPE html>
 <html lang="es" data-theme="dark">
@@ -400,24 +420,24 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   <div class="side-item" data-view="ipo" onclick="switchView('ipo')">
     <span class="side-icon">🎯</span><span>IPO Maestro</span>
   </div>
+  <div class="side-item" data-view="idle" onclick="switchView('idle')">
+    <span class="side-icon">⏱️</span><span>Tiempos de Ocio</span>
+  </div>
   <div class="side-item" data-view="live" onclick="switchView('live')">
     <span class="side-icon">🎥</span><span>Video &amp; Live</span>
   </div>
   <div class="side-item" data-view="cycles" onclick="switchView('cycles')">
     <span class="side-icon">🔄</span><span>Ciclos</span>
   </div>
-  <div class="side-item" data-view="trucks" onclick="switchView('trucks')">
-    <span class="side-icon">🚛</span><span>Camiones &amp; OCR</span>
-  </div>
   <div class="side-item" data-view="alerts" onclick="switchView('alerts')">
     <span class="side-icon">🚨</span><span>Alertas</span>
     <span class="side-badge" id="side-alert-count">0</span>
   </div>
-  <div class="side-item" data-view="simulator" onclick="switchView('simulator')">
-    <span class="side-icon">🎯</span><span>Simulador</span>
+  <div class="side-item" data-view="insights" onclick="switchView('insights')">
+    <span class="side-icon">💡</span><span>Insights &amp; Recomendaciones</span>
   </div>
-  <div class="side-item" data-view="bpmn" onclick="switchView('bpmn')">
-    <span class="side-icon">📈</span><span>BPMN Coverage</span>
+  <div class="side-item" data-view="simulator" onclick="switchView('simulator')">
+    <span class="side-icon">🎯</span><span>Simulador (apoyo)</span>
   </div>
 
   <div class="side-divider"></div>
@@ -494,6 +514,20 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   {ipo_html}
 </div><!-- /view-ipo -->
 
+<!-- ═══════════ VIEW: IDLE TIME INDEX ═══════════ -->
+<div class="view" id="view-idle" data-view="idle">
+  <div class="view-hdr">
+    <div>
+      <h2>Tiempos de Ocio — Índice ITI</h2>
+      <div class="desc">Métrica más intuitiva: qué porcentaje del tiempo no está produciendo el equipo</div>
+    </div>
+    <div class="view-actions">
+      <button class="btn btn-primary" onclick="exportCurrentView()">📄 Exportar PDF</button>
+    </div>
+  </div>
+  {idle_html}
+</div><!-- /view-idle -->
+
 <!-- ═══════════ VIEW: LIVE ═══════════ -->
 <div class="view" id="view-live" data-view="live">
   <div class="view-hdr">
@@ -518,6 +552,28 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
     <button class="speed-btn" onclick="setSpeed(5,this)">5x</button>
     <button class="speed-btn" onclick="setSpeed(15,this)">15x</button>
     <button class="speed-btn" onclick="setSpeed(30,this)">30x</button>
+  </div>
+</div>
+
+<!-- BANNER DE ALERTA PRODUCTIVA (persistente, arriba del video) -->
+<div class="sec">
+  <div id="prod-banner" style="display:none;padding:14px 20px;border-radius:10px;
+       background:linear-gradient(90deg,{C['red']},#b02a2a);color:#fff;
+       font-weight:700;letter-spacing:.03em;box-shadow:0 0 30px rgba(248,81,73,.4);
+       animation:pulse 1.5s ease-in-out infinite">
+    <div style="display:flex;align-items:center;gap:14px">
+      <span style="font-size:1.8rem">🚨</span>
+      <div style="flex:1">
+        <div style="font-size:.95rem">PÉRDIDA PRODUCTIVA EN CURSO</div>
+        <div id="prod-banner-detail" style="font-size:.78rem;opacity:.95;font-weight:500;margin-top:3px">
+          Sin movimiento de cámara detectado — <span id="prod-banner-time">0</span>s
+        </div>
+      </div>
+      <div id="prod-banner-loss" style="font-size:1.3rem;font-family:monospace;
+           padding:6px 14px;background:rgba(0,0,0,.25);border-radius:6px">
+        ~0 t
+      </div>
+    </div>
   </div>
 </div>
 
@@ -671,30 +727,19 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   </div>
 </div><!-- /view-cycles -->
 
-<!-- ═══════════ VIEW: TRUCKS + OCR ═══════════ -->
-<div class="view" id="view-trucks" data-view="trucks">
+<!-- ═══════════ VIEW: INSIGHTS & RECOMENDACIONES ═══════════ -->
+<div class="view" id="view-insights" data-view="insights">
   <div class="view-hdr">
     <div>
-      <h2>Camiones &amp; OCR — ID y Medidor de Peso</h2>
-      <div class="desc">Detecciones YOLO26 + OCR del numero de camion y display de peso frontal</div>
+      <h2>Insights &amp; Recomendaciones</h2>
+      <div class="desc">Las 4 preguntas del brief respondidas con data real del pipeline</div>
     </div>
     <div class="view-actions">
       <button class="btn btn-primary" onclick="exportCurrentView()">📄 Exportar PDF</button>
     </div>
   </div>
-  <div class="sec">
-    <div class="sec-title">Carga por Camion — Despacho</div>
-    {trucks_html}
-  </div>
-  <div class="sec">
-    <div class="sec-title">Lecturas OCR (ID + Medidor de Peso por frame)</div>
-    {ocr_html}
-  </div>
-  <div class="sec">
-    <div class="sec-title">Capturas de Video — Eventos Clave</div>
-    {thumbs_html}
-  </div>
-</div><!-- /view-trucks -->
+  {insights_html}
+</div><!-- /view-insights -->
 
 <!-- ═══════════ VIEW: ALERTS ═══════════ -->
 <div class="view" id="view-alerts" data-view="alerts">
@@ -716,70 +761,34 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   </div>
 </div><!-- /view-alerts -->
 
-<!-- ═══════════ VIEW: SIMULATOR 3D ═══════════ -->
+<!-- ═══════════ VIEW: SIMULATOR 3D (apoyo) ═══════════ -->
 <div class="view" id="view-simulator" data-view="simulator">
   <div class="view-hdr">
     <div>
-      <h2>Simulador 3D — Colocación Pala-Camión</h2>
-      <div class="desc">Escena 3D interactiva con Three.js · rotar con mouse · comparar colocación óptima vs errores</div>
+      <h2>Simulador — Material de Apoyo</h2>
+      <div class="desc">Visualización de referencia de la colocación pala-camión (complementa al análisis cuantitativo)</div>
     </div>
     <div class="view-actions">
       <button class="btn btn-primary" onclick="exportCurrentView()">📄 Exportar PDF</button>
     </div>
   </div>
-  <div class="sec sim-wrap">
-    <div class="sim-panel">
-      <h3 style="color:{C['green']}">✓ Colocación Óptima 3D</h3>
-      <div id="sim3d-ok" class="sim-canvas sim-ok" style="height:360px"></div>
-      <div class="sim-legend">
-        <span><span class="dot" style="background:{C['green']}"></span>Zona óptima</span>
-        <span><span class="dot" style="background:{C['yellow']}"></span>Aceptable</span>
-        <span><span class="dot" style="background:{C['red']}"></span>Rechazo</span>
-      </div>
-      <div class="bpmn-note" style="margin-top:6px;text-align:center">
-        Arrastrá con el mouse para rotar · scroll para zoom
-      </div>
+  <div class="sec sim-wrap" style="grid-template-columns:1fr 1fr;gap:10px">
+    <div class="sim-panel" style="padding:8px">
+      <h3 style="color:{C['green']};font-size:.85rem">✓ Colocación Óptima</h3>
+      <div id="sim3d-ok" class="sim-canvas sim-ok" style="height:240px"></div>
     </div>
-    <div class="sim-panel">
-      <h3 style="color:{C['red']}">✗ Colocación Incorrecta 3D</h3>
-      <div id="sim3d-bad" class="sim-canvas sim-bad" style="height:360px"></div>
-      <div class="sim-controls">
-        <button onclick="simScenario3D('offset',this)" class="active">Offset lateral</button>
-        <button onclick="simScenario3D('far',this)">Muy lejos</button>
-        <button onclick="simScenario3D('close',this)">Muy cerca</button>
-        <button onclick="simScenario3D('angle',this)">Mal ángulo</button>
+    <div class="sim-panel" style="padding:8px">
+      <h3 style="color:{C['red']};font-size:.85rem">✗ Colocación Incorrecta</h3>
+      <div id="sim3d-bad" class="sim-canvas sim-bad" style="height:240px"></div>
+      <div class="sim-controls" style="margin-top:6px">
+        <button onclick="simScenario3D('offset',this)" class="active">Offset</button>
+        <button onclick="simScenario3D('far',this)">Lejos</button>
+        <button onclick="simScenario3D('close',this)">Cerca</button>
+        <button onclick="simScenario3D('angle',this)">Ángulo</button>
       </div>
-      <div id="sim3d-metrics" class="bpmn-note" style="margin-top:8px;text-align:center;font-family:monospace">
-        Distancia: — m · Offset: — m · Ángulo: —°
-      </div>
-    </div>
-  </div>
-  <div class="sec">
-    <div class="sec-title">Parámetros de la Colocación Ideal</div>
-    <div class="glossary">
-      <dl>
-        <dt>Distancia pala-camión</dt><dd>~12-15m del centro del balde. Si muy lejos: más swing, pérdida de tiempo. Si muy cerca: riesgo de contacto.</dd>
-        <dt>Ángulo de pala</dt><dd>~90° respecto al eje del camión. Permite descarga centrada en tolva.</dd>
-        <dt>Offset lateral</dt><dd>Camión centrado ±1m del punto de descarga. Desviación grande = derrames.</dd>
-        <dt>Altura tolva</dt><dd>Visible en frame superior. Debe estar por debajo de la parte más alta del balde.</dd>
-      </dl>
     </div>
   </div>
 </div><!-- /view-simulator -->
-
-<!-- ═══════════ VIEW: BPMN COVERAGE ═══════════ -->
-<div class="view" id="view-bpmn" data-view="bpmn">
-  <div class="view-hdr">
-    <div>
-      <h2>BPMN Coverage — Proceso Minero Completo</h2>
-      <div class="desc">Cobertura de cada nodo del proceso: Sedimento → Carga → Transporte → Descarga → Despacho</div>
-    </div>
-    <div class="view-actions">
-      <button class="btn btn-primary" onclick="exportCurrentView()">📄 Exportar PDF</button>
-    </div>
-  </div>
-  {bpmn_html}
-</div><!-- /view-bpmn -->
 
 <!-- ═══════════ VIEW: HELP / GLOSARIO ═══════════ -->
 <div class="view" id="view-help" data-view="help">
@@ -823,6 +832,12 @@ const SESSION_METRICS = {{
   cycles_hr:     {metrics.cycles_per_hour},
   productivity:  {metrics.productivity_tph},
   total_payload: {metrics.total_payload_t},
+  // BUGFIX: promedios para que los gauges NO inicien en 50% placeholder
+  avg_coll:      {avg_coll:.1f},
+  avg_man:       {avg_man:.1f},
+  avg_pos:       {avg_pos:.1f},
+  avg_disc:      {avg_disc:.1f},
+  avg_oee:       {avg_oee:.1f},
 }};
 
 const TRANSPORT = {json.dumps(dict(
@@ -831,6 +846,15 @@ const TRANSPORT = {json.dumps(dict(
     disp_eff=transport.dispatch_efficiency if transport else 0,
     avg_fill=transport.avg_truck_fill_pct if transport else 0,
 ) if transport else dict(n_trucks=0,n_full=0,disp_eff=0,avg_fill=0))};
+
+// Motion timeline para banner de pérdida productiva (dual-source)
+const MOTION_SERIES = {json.dumps(
+    (visual_validation or {}).get('motion_timeline', {}).get('series', [])
+)};
+const MOTION_IDLE_PERIODS = {json.dumps(
+    (visual_validation or {}).get('motion_timeline', {}).get('idle_periods', [])
+)};
+const PRODUCTIVITY_TPH = {metrics.productivity_tph if metrics.productivity_tph > 0 else 400};
 
 const DARK_LAYOUT = {{
   paper_bgcolor: '{C['bg']}', plot_bgcolor: '{C['panel']}',
@@ -946,8 +970,44 @@ function update(idx) {{
   // IMU scrolling graphs
   _updateScrollingCharts(t);
 
+  // Banner de pérdida productiva (dual-source)
+  _updateProdBanner(t);
+
   // Alerts
   _processAlerts(t, snap.alerts || []);
+}}
+
+// ── BANNER PÉRDIDA PRODUCTIVA ────────────────────────────────────────────────
+// Se activa cuando el timestamp actual cae dentro de un idle_period visual
+// detectado por optical flow. Muestra al operador en tiempo real que está
+// perdiendo productividad.
+function _updateProdBanner(t) {{
+  const banner = document.getElementById('prod-banner');
+  if (!banner || !MOTION_IDLE_PERIODS || MOTION_IDLE_PERIODS.length === 0) {{
+    if (banner) banner.style.display = 'none';
+    return;
+  }}
+  // ¿Estamos dentro de algún idle period visual?
+  let active = null;
+  for (const p of MOTION_IDLE_PERIODS) {{
+    if (t >= p.t_start && t <= p.t_end) {{
+      active = p;
+      break;
+    }}
+  }}
+  if (active) {{
+    const elapsed = (t - active.t_start).toFixed(0);
+    const elapsedH = (t - active.t_start) / 3600;
+    const lossT = (elapsedH * PRODUCTIVITY_TPH).toFixed(1);
+    banner.style.display = 'block';
+    document.getElementById('prod-banner-time').textContent = elapsed;
+    document.getElementById('prod-banner-loss').textContent = '~' + lossT + ' t';
+    document.getElementById('prod-banner-detail').textContent =
+      'Sin movimiento de cámara detectado — ' + elapsed + 's (período idle #' +
+      (MOTION_IDLE_PERIODS.indexOf(active) + 1) + ' de ' + MOTION_IDLE_PERIODS.length + ')';
+  }} else {{
+    banner.style.display = 'none';
+  }}
 }}
 
 // ── HUD helper ───────────────────────────────────────────────────────────────
@@ -1062,9 +1122,21 @@ function _addAlert(t, type, sev, msg, val, unit) {{
 }}
 
 // ── INIT ─────────────────────────────────────────────────────────────────────
-// Inicializar gauges en 50%
-['g-coll','g-man','g-pos','g-disc','g-oee','g-teff','g-disp','g-truck']
-  .forEach((id,i) => _gauge(id, 50, '', '%'));
+// BUGFIX: Inicializar gauges con valores PROMEDIO DE SESIÓN en vez de 50% placeholder.
+// Esto muestra inmediatamente info util al cargar, sin esperar al PLAY.
+const _INIT_GAUGE_VALUES = {{
+  'g-coll':  SESSION_METRICS.avg_coll,
+  'g-man':   SESSION_METRICS.avg_man,
+  'g-pos':   SESSION_METRICS.avg_pos,
+  'g-disc':  SESSION_METRICS.avg_disc,
+  'g-oee':   SESSION_METRICS.avg_oee,
+  'g-teff':  SESSION_METRICS.time_eff,
+  'g-disp':  TRANSPORT.disp_eff,
+  'g-truck': TRANSPORT.avg_fill,
+}};
+Object.entries(_INIT_GAUGE_VALUES).forEach(([id, val]) => {{
+  _gauge(id, val != null && !isNaN(val) ? val : 0, '', '%');
+}});
 
 // Inicializar graficos IMU vacios
 Plotly.newPlot('chart-accel',[],{{...DARK_LAYOUT,height:160,title:{{text:'Accelerometer'}}}},{{displayModeBar:false}});
@@ -1089,7 +1161,7 @@ function switchView(name) {{
   // Render especificos por vista
   if (name === 'simulator') renderSimulators();
   if (name === 'alerts') renderFullAlertFeed();
-  if ((name === 'ipo' || name === 'help') && window.MathJax && window.MathJax.typesetPromise) {{
+  if ((name === 'ipo' || name === 'help' || name === 'idle') && window.MathJax && window.MathJax.typesetPromise) {{
     setTimeout(() => window.MathJax.typesetPromise([view]).catch(e => console.warn('MathJax:', e)), 60);
   }}
 }}
@@ -1280,7 +1352,7 @@ async function exportCurrentView() {{
 }}
 
 async function exportAllGrouped() {{
-  const views = ['overview','live','cycles','trucks','alerts','simulator','bpmn'];
+  const views = ['overview','live','cycles','alerts','insights','simulator'];
   const {{ jsPDF }} = window.jspdf;
   const pdf = new jsPDF({{ orientation:'portrait', unit:'mm', format:'a4' }});
   const W = 210, H = 297;
@@ -2351,3 +2423,548 @@ def _hex_to_rgb(hex_str: str) -> str:
         return f'{r},{g},{b}'
     except Exception:
         return '128,128,128'
+
+
+def _insights_view(metrics, idle: Dict, ipo, transport, visual: Dict) -> str:
+    """
+    Vista que responde las 4 preguntas del brief del hackathon:
+      1. ¿Qué midieron y cómo?
+      2. ¿Qué les dijeron los datos?
+      3. ¿Qué recomendarían al operador?
+      4. ¿Qué construirían con 6hs más?
+    """
+    # Datos reales
+    duration_min = metrics.total_duration_s / 60
+    iti_pct = idle.get('iti_pct', 0)
+    verified_iti_pct = idle.get('verified_iti_pct', 0)
+    agreement = idle.get('agreement_pct', 0)
+    confidence = idle.get('confidence', 'N/A')
+    prod_alerts = idle.get('productivity_alerts', [])
+    disagreements = idle.get('disagreements', [])
+    n_cycles = metrics.n_full_cycles
+    payload_t = metrics.total_payload_t
+
+    conf_colors = {'HIGH': C['green'], 'MEDIUM': C['yellow'], 'LOW': C['red']}
+    conf_c = conf_colors.get(confidence, C['muted'])
+
+    # Métrica "pérdida estimada" visualmente impactante
+    idle_minutes = idle.get('verified_idle_s', idle.get('total_idle_s', 0)) / 60
+    productivity_tph = metrics.productivity_tph if metrics.productivity_tph > 0 else 400
+    estimated_loss_t = (idle_minutes / 60) * productivity_tph
+
+    return f"""
+    <div class="sec">
+      <div class="sec-title">Pregunta 1 — ¿Qué midieron y cómo?</div>
+      <div class="panel" style="padding:18px">
+        <p style="margin-bottom:12px;color:{C['text']}">
+          Medimos <b style="color:{C['blue']}">productividad operacional</b> con un enfoque
+          <b>dual-source</b> inédito:
+        </p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:12px">
+          <div class="panel" style="background:{C['panel2']};padding:12px">
+            <div style="font-weight:700;color:{C['orange']};margin-bottom:6px">🛰 SENSOR 1 — IMU (mecánico)</div>
+            <div style="color:{C['muted']};font-size:.82rem">
+              Acelerómetro + giroscopio @ ~10Hz detectan movimiento
+              mecánico de la pala. Identificamos ciclos (DIG→SWING→DUMP),
+              wait events, y anomalías (impactos duros, dumps bruscos).
+            </div>
+          </div>
+          <div class="panel" style="background:{C['panel2']};padding:12px">
+            <div style="font-weight:700;color:{C['blue']};margin-bottom:6px">🎥 SENSOR 2 — Optical Flow (visual)</div>
+            <div style="color:{C['muted']};font-size:.82rem">
+              La cámara va montada sobre la pala. Calculamos <b>optical flow
+              Farneback</b> entre frames consecutivos: cámara moviéndose =
+              pala moviéndose. Cámara quieta = pala quieta (idle real).
+            </div>
+          </div>
+        </div>
+        <div class="panel" style="background:rgba({_hex_to_rgb(C['green'])},.1);border-left:4px solid {C['green']};padding:10px 14px">
+          <b style="color:{C['green']}">Insight maestro</b>: al cruzar ambas fuentes obtenemos
+          <b>idle verificado</b> (ambas confirman quietud) y <b>discrepancias flag</b>
+          (una dice idle y la otra actividad — auditoría). El acuerdo entre sensores
+          da el <b>índice de confianza del operador</b>.
+        </div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Pregunta 2 — ¿Qué les dijeron los datos?</div>
+      <div class="panel" style="padding:18px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:14px">
+          <div>
+            <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Ventana observada</div>
+            <div style="font-size:1.6rem;font-weight:700;font-family:monospace">{duration_min:.1f} min</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Ciclos completos</div>
+            <div style="font-size:1.6rem;font-weight:700;color:{C['green']};font-family:monospace">{n_cycles}</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Payload total</div>
+            <div style="font-size:1.6rem;font-weight:700;color:{C['blue']};font-family:monospace">{payload_t:.0f}t</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">ITI (IMU)</div>
+            <div style="font-size:1.6rem;font-weight:700;color:{C['red']};font-family:monospace">{iti_pct:.1f}%</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">ITI verificado</div>
+            <div style="font-size:1.6rem;font-weight:700;color:{conf_c};font-family:monospace">{verified_iti_pct:.1f}%</div>
+          </div>
+          <div>
+            <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Acuerdo IMU↔Cámara</div>
+            <div style="font-size:1.6rem;font-weight:700;color:{conf_c};font-family:monospace">{agreement:.1f}%</div>
+          </div>
+        </div>
+        <div style="color:{C['text']};line-height:1.7">
+          <p style="margin-bottom:8px">
+            <b style="color:{C['red']}">Hallazgo #1</b>: La operación tiene un
+            <b>ITI del {iti_pct:.1f}%</b> según el IMU — más de la mitad del tiempo sin
+            movimiento mecánico. Equivale a <b>{idle.get('total_idle_s',0)/60:.1f} minutos</b>
+            perdidos en la ventana de 15 min.
+          </p>
+          <p style="margin-bottom:8px">
+            <b style="color:{conf_c}">Hallazgo #2 (dual-source)</b>: El optical flow
+            confirma el <b>{verified_iti_pct:.1f}%</b> como idle REAL (ambas fuentes concuerdan).
+            Confianza global: <b>{confidence}</b>. {'Alto nivel de confianza en la métrica.' if confidence == 'HIGH' else 'Hay discrepancias: la cámara ve movimiento durante waits del IMU.'}
+          </p>
+          <p style="margin-bottom:8px">
+            <b style="color:{C['yellow']}">Hallazgo #3</b>: Detectamos <b>{len(prod_alerts)} períodos
+            de pérdida productiva</b> (cámara sin movimiento ≥15s). Cada uno representa
+            toneladas no movidas auditable desde el video.
+          </p>
+          <p>
+            <b style="color:{C['purple']}">Hallazgo #4</b>: Se identificaron <b>{len(disagreements)} discrepancias</b>
+            entre IMU y cámara. Estos son eventos donde <b>hay que auditar el sensor</b>
+            porque las fuentes no concuerdan.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Pregunta 3 — ¿Qué recomendarían al operador?</div>
+      <div class="panel" style="padding:18px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div class="panel" style="background:rgba({_hex_to_rgb(C['red'])},.08);border-left:3px solid {C['red']};padding:12px">
+            <div style="font-weight:700;color:{C['red']};margin-bottom:6px">🚨 Acción inmediata</div>
+            <ul style="color:{C['text']};margin-left:18px;line-height:1.7">
+              <li>Si ves <b>banner naranja</b> en Live = operás con pérdida productiva AHORA</li>
+              <li>Revisar los <b>períodos idle &gt;60s</b> en la vista Ocio — son intervenciones críticas</li>
+              <li>Coordinar con despacho para cerrar la brecha entre camiones</li>
+            </ul>
+          </div>
+          <div class="panel" style="background:rgba({_hex_to_rgb(C['yellow'])},.08);border-left:3px solid {C['yellow']};padding:12px">
+            <div style="font-weight:700;color:{C['yellow']};margin-bottom:6px">⚠ Medio plazo</div>
+            <ul style="color:{C['text']};margin-left:18px;line-height:1.7">
+              <li>Investigar <b>discrepancias IMU↔cámara</b>: posible sensor en mal estado</li>
+              <li>Si ITI verificado {'<' if verified_iti_pct < 30 else '>'} 30%, revisar flota de camiones vs capacidad de pala</li>
+              <li>Reducir impactos duros durante DIG ajustando ángulo de ataque</li>
+            </ul>
+          </div>
+          <div class="panel" style="background:rgba({_hex_to_rgb(C['blue'])},.08);border-left:3px solid {C['blue']};padding:12px">
+            <div style="font-weight:700;color:{C['blue']};margin-bottom:6px">💡 Estratégico</div>
+            <ul style="color:{C['text']};margin-left:18px;line-height:1.7">
+              <li>Usar el <b>idle verificado ({verified_iti_pct:.1f}%)</b> como KPI principal, no el IMU-solo</li>
+              <li>Instalar dashboard en sala de control con alertas dual-source</li>
+              <li>Correlacionar ITI con turnos/operadores para identificar oportunidades</li>
+            </ul>
+          </div>
+          <div class="panel" style="background:rgba({_hex_to_rgb(C['green'])},.08);border-left:3px solid {C['green']};padding:12px">
+            <div style="font-weight:700;color:{C['green']};margin-bottom:6px">✅ Quick wins</div>
+            <ul style="color:{C['text']};margin-left:18px;line-height:1.7">
+              <li>Si recuperás <b>10% del ITI</b>, ganás ~{estimated_loss_t*0.1:.0f}t/turno</li>
+              <li>Los {len(prod_alerts)} eventos idle detectados suman {sum(p['duration_s'] for p in prod_alerts)/60:.1f} min recuperables</li>
+              <li>Fill factor promedio es {metrics.avg_fill_factor_pct:.0f}% — objetivo 85%+</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Pregunta 4 — ¿Qué construirían con 6 horas más?</div>
+      <div class="panel" style="padding:18px">
+        <ol style="color:{C['text']};line-height:1.8;margin-left:20px">
+          <li><b style="color:{C['blue']}">Fine-tune YOLO sobre el dataset propio</b>: con labeling automatizado vía SAM2, detectar bucket específico (no solo camiones) para mejorar aún más la validación visual.</li>
+          <li><b style="color:{C['green']}">Predicción de ITI próxima hora</b>: modelo ARIMA o LSTM sobre la serie temporal de motion + IMU para anticipar bajones productivos ANTES que sucedan.</li>
+          <li><b style="color:{C['yellow']}">Scoring de operador</b>: comparar métricas IPO entre operadores del mismo turno para identificar mejores prácticas transferibles.</li>
+          <li><b style="color:{C['orange']}">Integración con dispatch</b>: API bidireccional con sistema de despacho — cuando la pala entra en idle verificado, redirigir automáticamente camiones más cercanos.</li>
+          <li><b style="color:{C['purple']}">Alerta push tiempo real</b>: cuando idle verificado supera threshold, notificar supervisor vía SMS/Teams con clip de 10s del evento.</li>
+          <li><b style="color:{C['red']}">Hard impact prevention</b>: con accelerómetro + video, crear un "assistant" que avise al operador si el ángulo de ataque al banco es sub-óptimo.</li>
+        </ol>
+      </div>
+    </div>
+    """
+
+
+def _idle_view(idle: Dict) -> str:
+    """Vista del Indice de Tiempos de Ocio — hero + desglose + top waits + timeline."""
+    if not idle or idle.get('total_duration_s', 0) <= 0:
+        return ('<div class="panel" style="padding:20px">'
+                '<p style="color:#8b949e">Sin datos de ocio disponibles.</p></div>')
+
+    band_colors = {
+        'OPTIMO':       C['green'],
+        'NORMAL':       C['blue'],
+        'CRITICO':      C['yellow'],
+        'COMPROMETIDO': C['red'],
+        'N/A':          C['muted'],
+    }
+    bc = band_colors.get(idle.get('band', 'N/A'), C['muted'])
+    iti_pct = idle.get('iti_pct', 0.0)
+    prod_pct = 100 - iti_pct
+
+    # Badge de confianza (validación visual con YOLO)
+    conf_label = idle.get('confidence', None)
+    conf_score = idle.get('confidence_score', 0.0)
+    iti_validated_pct = idle.get('iti_validated_pct', None)
+    disagreements_n = idle.get('disagreements_n', 0)
+    visual_activity_pct = idle.get('visual_activity_pct', 0.0)
+
+    conf_colors = {
+        'HIGH':   C['green'],
+        'MEDIUM': C['yellow'],
+        'LOW':    C['red'],
+    }
+    conf_badge_html = ''
+    if conf_label:
+        cc = conf_colors.get(conf_label, C['muted'])
+        icon = '🟢' if conf_label == 'HIGH' else ('🟡' if conf_label == 'MEDIUM' else '🔴')
+        validated_note = ''
+        if iti_validated_pct is not None:
+            validated_note = (
+                f'<div style="color:{C["muted"]};font-size:.72rem;margin-top:4px">'
+                f'ITI validado por video: <b style="color:{cc};font-family:monospace">'
+                f'{iti_validated_pct:.1f}%</b></div>'
+            )
+        conf_badge_html = f"""
+        <div style="margin-top:14px;padding:10px 16px;background:rgba({_hex_to_rgb(cc)},.10);
+                    border:1px solid {cc};border-radius:8px;display:inline-block">
+          <div style="display:flex;align-items:center;gap:10px;justify-content:center">
+            <span style="font-size:1.2rem">{icon}</span>
+            <span style="color:{cc};font-weight:700;letter-spacing:.05em;font-size:.85rem">
+              CONFIANZA {conf_label} · {conf_score*100:.0f}%
+            </span>
+          </div>
+          <div style="color:{C['muted']};font-size:.7rem;margin-top:4px">
+            Dual-source: IMU + validación visual YOLO
+          </div>
+          {validated_note}
+        </div>
+        """
+
+    # Hero: ITI grande + productividad complementaria
+    hero = f"""
+    <div class="ipo-hero">
+      <div style="color:{C['muted']};font-size:.75rem;text-transform:uppercase;letter-spacing:.1em">
+        Indice de Tiempos de Ocio (ITI)
+      </div>
+      <div class="ipo-big" style="color:{bc}">{iti_pct:.1f}%</div>
+      <div class="ipo-band" style="background:{bc};color:#000">
+        {idle.get('band', 'N/A')}
+      </div>
+      {conf_badge_html}
+      <div style="color:{C['muted']};font-size:.85rem;margin-top:10px;max-width:560px;margin-left:auto;margin-right:auto">
+        {idle.get('recommendation', '')}
+      </div>
+      <div style="margin-top:18px;display:flex;gap:20px;justify-content:center;flex-wrap:wrap">
+        <div>
+          <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase;letter-spacing:.06em">Tiempo ocio</div>
+          <div style="font-size:1.6rem;font-weight:700;color:{bc};font-family:monospace">
+            {idle.get('total_idle_s', 0):.0f} s
+          </div>
+          <div style="font-size:.68rem;color:{C['muted']}">
+            = {idle.get('total_idle_s', 0)/60:.1f} min
+          </div>
+        </div>
+        <div>
+          <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase;letter-spacing:.06em">Tiempo productivo</div>
+          <div style="font-size:1.6rem;font-weight:700;color:{C['green']};font-family:monospace">
+            {idle.get('productive_s', 0):.0f} s
+          </div>
+          <div style="font-size:.68rem;color:{C['muted']}">
+            = {idle.get('productive_s', 0)/60:.1f} min
+          </div>
+        </div>
+        <div>
+          <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase;letter-spacing:.06em">Ratio Prod/Ocio</div>
+          <div style="font-size:1.6rem;font-weight:700;color:{C['blue']};font-family:monospace">
+            {idle.get('ratio_prod_idle', 0):.2f}x
+          </div>
+          <div style="font-size:.68rem;color:{C['muted']}">
+            {idle.get('n_events', 0)} eventos de ocio
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+
+    # Barra visual: productivo vs ocio
+    progress_bar = f"""
+    <div class="sec">
+      <div class="sec-title">Distribucion del tiempo observado</div>
+      <div style="background:{C['panel2']};border-radius:8px;padding:16px;border:1px solid {C['border']}">
+        <div style="display:flex;height:48px;border-radius:6px;overflow:hidden;box-shadow:inset 0 0 0 1px {C['border']}">
+          <div style="width:{prod_pct:.2f}%;background:{C['green']};display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;font-size:.9rem;min-width:60px">
+            {prod_pct:.1f}% PROD
+          </div>
+          <div style="width:{iti_pct:.2f}%;background:{bc};display:flex;align-items:center;justify-content:center;color:#000;font-weight:700;font-size:.9rem;min-width:60px">
+            {iti_pct:.1f}% OCIO
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:.72rem;color:{C['muted']}">
+          <span>0 s</span>
+          <span style="font-family:monospace">Total observado: {idle.get('total_duration_s', 0):.0f} s</span>
+          <span>{idle.get('total_duration_s', 0):.0f} s</span>
+        </div>
+      </div>
+    </div>
+    """
+
+    # Desglose por categoria
+    by_cat = idle.get('by_category', {})
+    cat_rows = ''
+    total_idle = idle.get('total_idle_s', 1)
+    cat_colors_map = {
+        'pre_load':    C['blue'],
+        'inter_cycle': C['yellow'],
+        'end_session': C['purple'],
+        'critical':    C['red'],
+        'unknown':     C['muted'],
+    }
+    for cat, data in by_cat.items():
+        if data['n_events'] == 0:
+            continue
+        col = cat_colors_map.get(cat, C['muted'])
+        bar_pct = min(100, data['pct_of_idle'])
+        cat_rows += f"""
+        <tr>
+          <td><span style="display:inline-block;width:10px;height:10px;background:{col};border-radius:2px;margin-right:6px"></span>
+            <b>{data['label']}</b>
+          </td>
+          <td style="font-family:monospace">{data['total_s']:.1f} s</td>
+          <td style="font-family:monospace">{data['n_events']}</td>
+          <td style="min-width:160px">
+            <div style="background:{C['panel2']};height:14px;border-radius:3px;overflow:hidden;display:inline-block;width:120px;vertical-align:middle;margin-right:8px">
+              <div style="width:{bar_pct}%;background:{col};height:100%"></div>
+            </div>
+            <span style="font-family:monospace;font-size:.75rem">{data['pct_of_idle']:.1f}%</span>
+          </td>
+        </tr>
+        """
+
+    desglose = f"""
+    <div class="sec">
+      <div class="sec-title">Desglose por categoria</div>
+      <div class="panel" style="padding:0;overflow:hidden">
+        <table>
+          <thead>
+            <tr>
+              <th>Categoria</th>
+              <th>Total (s)</th>
+              <th># eventos</th>
+              <th>% del ocio</th>
+            </tr>
+          </thead>
+          <tbody>{cat_rows or '<tr><td colspan="4" style="text-align:center;color:#8b949e">Sin datos</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+
+    # Top waits mas largos
+    top_waits = idle.get('top_waits', [])
+    top_rows = ''
+    for i, w in enumerate(top_waits, 1):
+        # Color por severidad del wait
+        if w['duration'] > 60:
+            wc = C['red']; wbadge = 'br'
+        elif w['duration'] > 25:
+            wc = C['yellow']; wbadge = 'bw'
+        else:
+            wc = C['blue']; wbadge = 'bb'
+        top_rows += f"""
+        <tr>
+          <td><b>#{i}</b></td>
+          <td style="font-family:monospace">t={w['t_start']:.1f}s → {w['t_end']:.1f}s</td>
+          <td><span class="badge {wbadge}" style="font-family:monospace">{w['duration']:.1f} s</span></td>
+          <td>{w['label']}</td>
+          <td style="font-family:monospace;color:{wc}">{w['pct_total']:.2f}%</td>
+        </tr>
+        """
+
+    top_table = f"""
+    <div class="sec">
+      <div class="sec-title">Top 5 waits mas largos — candidatos a optimizar</div>
+      <div class="panel" style="padding:0;overflow:hidden">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Ventana</th>
+              <th>Duracion</th>
+              <th>Razon</th>
+              <th>% del total</th>
+            </tr>
+          </thead>
+          <tbody>{top_rows or '<tr><td colspan="5" style="text-align:center;color:#8b949e">Sin waits registrados</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    """
+
+    # Bandas de interpretacion
+    bands_html = ""
+    for lo, hi, lbl, col_name, rec in [
+        (0.00, 0.15, 'OPTIMO',       'green',  'Muy eficiente'),
+        (0.15, 0.30, 'NORMAL',       'blue',   'Rango esperado'),
+        (0.30, 0.50, 'CRITICO',      'yellow', 'Revisar coordinacion'),
+        (0.50, 1.00, 'COMPROMETIDO', 'red',    'Intervencion urgente'),
+    ]:
+        active_cls = ' active' if idle.get('band') == lbl else ''
+        col_hex = C[col_name]
+        bands_html += f"""
+        <div class="ipo-tband{active_cls}" style="background:rgba({_hex_to_rgb(col_hex)},.15);border-color:{col_hex}">
+          <b style="color:{col_hex}">{lbl}</b>
+          <span style="color:{C['muted']};font-size:.65rem;display:block">{lo*100:.0f}% - {hi*100:.0f}%</span>
+          {rec}
+        </div>
+        """
+
+    bands_block = f"""
+    <div class="sec">
+      <div class="sec-title">Interpretacion por bandas</div>
+      <div class="ipo-tbands">{bands_html}</div>
+    </div>
+    """
+
+    # Formula + recomendaciones
+    formula_block = f"""
+    <div class="sec">
+      <div class="sec-title">Formula y referencia</div>
+      <div class="ipo-formula">
+        $$ ITI = \\frac{{T_{{ocio}}}}{{T_{{observado}}}} = \\frac{{\\sum_i d_i^{{wait}}}}{{T_{{total}}}} = \\frac{{{idle.get('total_idle_s', 0):.1f}}}{{{idle.get('total_duration_s', 0):.1f}}} = {idle.get('iti', 0):.3f} $$
+      </div>
+      <div class="glossary" style="margin-top:10px">
+        <h4>Por que es la metrica mas clara</h4>
+        <p style="color:{C['muted']}">
+          A diferencia del IPO que combina 5 factores, el ITI responde una pregunta simple:
+          <b>"¿Cuanto tiempo no estas produciendo?"</b>. Es facil de explicar, facil de medir
+          y facil de optimizar. Cada segundo que la pala no carga = perdida directa de productividad.
+        </p>
+        <h4 style="margin-top:12px">Como reducir el ITI</h4>
+        <dl>
+          <dt>Si domina <b>pre_load</b></dt><dd>Mejorar coordinacion con despacho para que el primer camion llegue a tiempo.</dd>
+          <dt>Si domina <b>inter_cycle</b></dt><dd>Optimizar rotacion de camiones. Evaluar si hay suficientes camiones en la flota para la pala.</dd>
+          <dt>Si domina <b>critical</b> (&gt;60s)</dt><dd>Son interrupciones anormales. Revisar mantenimiento, cambio de turno o eventos imprevistos.</dd>
+          <dt>Si domina <b>end_session</b></dt><dd>Planificar mejor el fin de turno. Asegurar que el ultimo camion llegue con tiempo.</dd>
+        </dl>
+      </div>
+    </div>
+    """
+
+    # Bloque de validación visual (dual-source) — solo si hay datos
+    visual_block = ''
+    if conf_label:
+        wait_confs = idle.get('wait_confidence', [])
+        disagreements = idle.get('disagreements', [])
+
+        # Tabla de confianza por wait
+        wait_rows = ''
+        for wc in wait_confs[:10]:  # top 10 por duración implícita (vienen ordenados)
+            conf_c = conf_colors.get(wc['confidence'], C['muted'])
+            validated_icon = '✓' if wc['validated'] else '✗'
+            wait_rows += f"""
+            <tr>
+              <td style="font-family:monospace">t={wc['t_start']:.1f}s → {wc['t_end']:.1f}s</td>
+              <td style="font-family:monospace">{wc['duration_s']:.1f}s</td>
+              <td>{wc['reason']}</td>
+              <td>
+                <span class="badge" style="background:rgba({_hex_to_rgb(conf_c)},.15);color:{conf_c};font-weight:700">
+                  {validated_icon} {wc['confidence']}
+                </span>
+              </td>
+              <td style="font-family:monospace">
+                {'🎥 static' if wc.get('visual_static', False) else ('🎥 ' + str(wc.get('motion_score', 0)))}
+              </td>
+            </tr>
+            """
+
+        # Discrepancias flag
+        disag_html = ''
+        if disagreements:
+            disag_rows = ''
+            for d in disagreements[:8]:
+                disag_rows += f"""
+                <tr>
+                  <td><span class="badge br">{d['type']}</span></td>
+                  <td style="font-family:monospace">t={d['t_start']:.1f}s</td>
+                  <td style="font-family:monospace">{d['duration_s']:.1f}s</td>
+                  <td style="color:{C['muted']};font-size:.75rem">{d['note']}</td>
+                </tr>
+                """
+            disag_html = f"""
+            <div class="sec">
+              <div class="sec-title" style="color:{C['red']}">⚠ Discrepancias entre IMU y Video ({len(disagreements)})</div>
+              <div class="panel" style="padding:0;overflow:hidden">
+                <table>
+                  <thead>
+                    <tr><th>Tipo</th><th>Tiempo</th><th>Duración</th><th>Nota</th></tr>
+                  </thead>
+                  <tbody>{disag_rows}</tbody>
+                </table>
+              </div>
+            </div>
+            """
+
+        visual_block = f"""
+        <div class="sec">
+          <div class="sec-title">Validación visual — Dual-source (IMU + YOLO)</div>
+          <div class="panel" style="padding:14px">
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:14px">
+              <div>
+                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Confianza global</div>
+                <div style="font-size:1.4rem;font-weight:700;color:{conf_colors.get(conf_label, C['muted'])};font-family:monospace">
+                  {conf_label}
+                </div>
+                <div style="font-size:.68rem;color:{C['muted']}">
+                  {conf_score*100:.1f}% de validación
+                </div>
+              </div>
+              <div>
+                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Actividad visual</div>
+                <div style="font-size:1.4rem;font-weight:700;color:{C['blue']};font-family:monospace">
+                  {visual_activity_pct:.1f}%
+                </div>
+                <div style="font-size:.68rem;color:{C['muted']}">% de frames con actividad</div>
+              </div>
+              <div>
+                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Ocio validado</div>
+                <div style="font-size:1.4rem;font-weight:700;color:{C['green']};font-family:monospace">
+                  {idle.get('idle_validated_s', 0):.0f}s
+                </div>
+                <div style="font-size:.68rem;color:{C['muted']}">confirmado por video</div>
+              </div>
+              <div>
+                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Ocio disputado</div>
+                <div style="font-size:1.4rem;font-weight:700;color:{C['yellow']};font-family:monospace">
+                  {idle.get('idle_disputed_s', 0):.0f}s
+                </div>
+                <div style="font-size:.68rem;color:{C['muted']}">requiere revisión</div>
+              </div>
+            </div>
+            <div style="color:{C['muted']};font-size:.78rem;line-height:1.5">
+              <b style="color:{C['text']}">¿Qué es esto?</b> El IMU detecta movimiento mecánico de la pala.
+              YOLO valida visualmente si hay actividad minera en el video. Cuando ambas fuentes
+              <b style="color:{C['green']}">concuerdan</b>, la métrica tiene alta confianza. Cuando
+              <b style="color:{C['red']}">discrepan</b>, se flaguea para revisión.
+            </div>
+          </div>
+
+          {'<div class="panel" style="padding:0;overflow:hidden;margin-top:10px"><table><thead><tr><th>Ventana</th><th>Duración</th><th>Razón</th><th>Confianza</th><th>Video</th></tr></thead><tbody>' + wait_rows + '</tbody></table></div>' if wait_rows else ''}
+        </div>
+        {disag_html}
+        """
+
+    return hero + progress_bar + desglose + top_table + bands_block + formula_block + visual_block

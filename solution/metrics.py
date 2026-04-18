@@ -601,6 +601,144 @@ def compute_wear_score(alerts: List[Alert], df_imu: pd.DataFrame, cycles) -> Dic
     }
 
 
+# ─── IDLE TIME INDEX (ITI) — metrica maestra de tiempos de ocio ───────────────
+
+IDLE_CATEGORY_LABELS = {
+    'pre_load':     'Pre-carga (esperando primer camion)',
+    'inter_cycle':  'Entre ciclos (cambio de camion / reposicion)',
+    'end_session':  'Fin de sesion (sin actividad posterior)',
+    'critical':     'Interrupcion critica (>60s)',
+    'unknown':      'Otros',
+}
+
+IDLE_BANDS = [
+    # (lo, hi, label, color, recommendation)
+    (0.00, 0.15, 'OPTIMO',       'green',
+     'Operacion muy eficiente. Los tiempos de ocio son minimos.'),
+    (0.15, 0.30, 'NORMAL',       'blue',
+     'Ocio dentro de rango esperado. Oportunidad de optimizar despacho.'),
+    (0.30, 0.50, 'CRITICO',      'yellow',
+     'Mucho tiempo sin producir. Revisar coordinacion pala-camion.'),
+    (0.50, 1.01, 'COMPROMETIDO', 'red',
+     'Mas de la mitad del tiempo sin actividad. Intervencion urgente.'),
+]
+
+
+def _classify_idle(idle_pct_0_1: float) -> Dict[str, str]:
+    for lo, hi, lbl, col, rec in IDLE_BANDS:
+        if lo <= idle_pct_0_1 < hi:
+            return {'band': lbl, 'color': col, 'recommendation': rec}
+    return {'band': 'N/A', 'color': 'muted', 'recommendation': 'Sin datos'}
+
+
+def compute_idle_index(wait_events: List,
+                        cycles: List,
+                        duration_s: float) -> Dict:
+    """
+    Calcula el Indice de Tiempos de Ocio (ITI).
+
+    Definicion:
+        ITI = T_ocio_total / T_observado
+
+    Donde T_ocio = suma de tiempos en wait events (inter_cycle + pre_load +
+    end_session + waits >5s entre ciclos).
+
+    Categoriza cada wait segun razon operacional.
+
+    Retorna dict con:
+        iti:                float  (0-1)
+        iti_pct:            float  (0-100)
+        total_idle_s:       float
+        total_duration_s:   float
+        n_events:           int
+        by_category:        dict {categoria: {total_s, n_events, pct_of_idle}}
+        top_waits:          list[dict] top 5 waits mas largos
+        critical_waits_n:   int  (cantidad de waits > 60s)
+        longest_wait_s:     float
+        productive_s:       float
+        band:               str OPTIMO/NORMAL/CRITICO/COMPROMETIDO
+        band_color:         str
+        recommendation:     str
+        ratio_prod_idle:    float  (productive / idle)
+    """
+    # Suma total de ocio
+    total_idle_s = sum(w.duration_s for w in wait_events)
+
+    if duration_s <= 0:
+        return {
+            'iti': 0.0, 'iti_pct': 0.0,
+            'total_idle_s': 0.0, 'total_duration_s': 0.0,
+            'n_events': 0, 'by_category': {},
+            'top_waits': [], 'critical_waits_n': 0, 'longest_wait_s': 0.0,
+            'productive_s': 0.0, 'band': 'N/A', 'band_color': 'muted',
+            'recommendation': 'Sin duracion observada', 'ratio_prod_idle': 0.0,
+        }
+
+    iti = total_idle_s / duration_s
+    iti = float(np.clip(iti, 0.0, 1.0))
+
+    # ── Desglose por categoria ─────────────────────────────────────────────────
+    by_cat: Dict[str, Dict] = {}
+    for cat in IDLE_CATEGORY_LABELS.keys():
+        by_cat[cat] = {'total_s': 0.0, 'n_events': 0, 'pct_of_idle': 0.0}
+
+    for w in wait_events:
+        cat = w.reason if w.reason in IDLE_CATEGORY_LABELS else 'unknown'
+        # Reclasificar waits muy largos como criticos (superponer)
+        if w.duration_s > 60:
+            by_cat['critical']['total_s'] += w.duration_s
+            by_cat['critical']['n_events'] += 1
+        # Siempre registrar en la categoria original tambien
+        by_cat[cat]['total_s'] += w.duration_s
+        by_cat[cat]['n_events'] += 1
+
+    # Recalcular porcentajes
+    for cat in by_cat:
+        by_cat[cat]['total_s'] = round(by_cat[cat]['total_s'], 1)
+        if total_idle_s > 0:
+            by_cat[cat]['pct_of_idle'] = round(
+                by_cat[cat]['total_s'] / total_idle_s * 100, 1)
+        by_cat[cat]['label'] = IDLE_CATEGORY_LABELS[cat]
+
+    # ── Top waits mas largos ───────────────────────────────────────────────────
+    sorted_waits = sorted(wait_events, key=lambda w: w.duration_s, reverse=True)
+    top_waits = []
+    for w in sorted_waits[:5]:
+        top_waits.append({
+            't_start':   round(w.t_start, 1),
+            't_end':     round(w.t_end, 1),
+            'duration':  round(w.duration_s, 1),
+            'reason':    w.reason,
+            'label':     IDLE_CATEGORY_LABELS.get(w.reason, 'Otros'),
+            'pct_total': round(w.duration_s / duration_s * 100, 2),
+        })
+
+    critical_waits_n = sum(1 for w in wait_events if w.duration_s > 60)
+    longest = max((w.duration_s for w in wait_events), default=0.0)
+
+    productive_s = max(0.0, duration_s - total_idle_s)
+    ratio = (productive_s / total_idle_s) if total_idle_s > 0 else float('inf')
+
+    band = _classify_idle(iti)
+
+    return {
+        'iti':              round(iti, 3),
+        'iti_pct':          round(iti * 100, 1),
+        'total_idle_s':     round(total_idle_s, 1),
+        'total_duration_s': round(duration_s, 1),
+        'n_events':         len(wait_events),
+        'by_category':      by_cat,
+        'top_waits':        top_waits,
+        'critical_waits_n': critical_waits_n,
+        'longest_wait_s':   round(longest, 1),
+        'productive_s':     round(productive_s, 1),
+        'band':             band['band'],
+        'band_color':       band['color'],
+        'recommendation':   band['recommendation'],
+        'ratio_prod_idle':  round(ratio, 2) if ratio != float('inf') else -1,
+    }
+
+
 def extract_spill_events(alerts: List[Alert]) -> List[Dict]:
     """
     Extrae todos los eventos que implican desperdicio de material:

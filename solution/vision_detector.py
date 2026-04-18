@@ -52,21 +52,24 @@ YOLO_MODEL_CANDIDATES = [
 ]
 VEHICLE_CLASS_IDS    = {7}   # COCO: truck
 YOLO_CONFIDENCE      = 0.30
-OCR_CONFIDENCE_MIN   = 0.30
+OCR_CONFIDENCE_MIN   = 0.15   # BUGFIX: bajado de 0.30 → capturamos más lecturas débiles
 
 # HSV para AMARILLO brillante (ID camion - pintura o vinilo reflectivo)
-HSV_YELLOW_LO = np.array([18, 100, 110])
-HSV_YELLOW_HI = np.array([38, 255, 255])
+# BUGFIX: ampliado rango para capturar amarillos verdosos, mostaza y desaturados (polvo/condiciones mineras)
+HSV_YELLOW_LO = np.array([15, 60, 90])
+HSV_YELLOW_HI = np.array([42, 255, 255])
 
 # HSV para ROJO (display LED balanza). Rojo cruza 0/180 → 2 rangos
-HSV_RED_LO_1  = np.array([0, 130, 110])
-HSV_RED_HI_1  = np.array([10, 255, 255])
-HSV_RED_LO_2  = np.array([165, 130, 110])
+# BUGFIX: ampliado para rojos más anaranjados y menos saturados (LEDs con brillo)
+HSV_RED_LO_1  = np.array([0, 100, 90])
+HSV_RED_HI_1  = np.array([12, 255, 255])
+HSV_RED_LO_2  = np.array([160, 100, 90])
 HSV_RED_HI_2  = np.array([180, 255, 255])
 
 # Patterns
-TRUCK_ID_PATTERN       = re.compile(r'\b\d{2,4}[A-Z]?\b')
-WEIGHT_DISPLAY_PATTERN = re.compile(r'\b\d{1,4}(?:[.,]\d{1,2})?\b')
+# BUGFIX: sin \b para tolerar texto pegado a bordes de bbox
+TRUCK_ID_PATTERN       = re.compile(r'\d{2,4}[A-Z]?')
+WEIGHT_DISPLAY_PATTERN = re.compile(r'\d{1,4}(?:[.,]\d{1,2})?')
 
 # Capacidades por modelo
 TRUCK_CAPS = {
@@ -246,6 +249,7 @@ def find_red_roi(bgr: np.ndarray, min_area: int = MIN_RED_AREA_PX) -> Optional[T
 def ocr_on_yellow(bgr_crop: np.ndarray) -> Tuple[str, float]:
     """
     OCR sobre la region amarilla encontrada en el frame del camion.
+    BUGFIX: si no hay ROI amarillo, intenta OCR sobre todo el crop (mitad superior).
     Devuelve (id_str, confianza).
     """
     if bgr_crop is None or bgr_crop.size == 0:
@@ -256,7 +260,9 @@ def ocr_on_yellow(bgr_crop: np.ndarray) -> Tuple[str, float]:
 
     roi_bbox = find_yellow_roi(bgr_crop)
     if roi_bbox is None:
-        return 'unknown', 0.0
+        # BUGFIX: Fallback — no encontramos amarillo pero hay crop YOLO.
+        # Intentamos OCR sobre todo el crop con menor confianza.
+        return _ocr_fallback_full_crop(bgr_crop, reader)
     x, y, w, h = roi_bbox
 
     # Extraer ROI con padding generoso (contexto ayuda al OCR)
@@ -267,7 +273,7 @@ def ocr_on_yellow(bgr_crop: np.ndarray) -> Tuple[str, float]:
     eh = min(bgr_crop.shape[0] - ey, h + 2 * pad_y)
     roi = bgr_crop[ey:ey + eh, ex:ex + ew]
     if roi.size == 0:
-        return 'unknown', 0.0
+        return _ocr_fallback_full_crop(bgr_crop, reader)
 
     # Upscale GRANDE (EasyOCR performa mucho mejor con texto >30px altura)
     scale = max(2.0, 300.0 / max(roi.shape[:2]))
@@ -313,7 +319,7 @@ def ocr_on_yellow(bgr_crop: np.ndarray) -> Tuple[str, float]:
             for (_, text, conf) in results_mask:
                 cleaned = text.strip().replace(' ', '').replace('O', '0')
                 matches = TRUCK_ID_PATTERN.findall(cleaned)
-                if matches and conf >= 0.20:
+                if matches and conf >= 0.10:   # BUGFIX: 0.20 → 0.10
                     for m in matches:
                         if 2 <= len(m) <= 4:
                             candidates.append((conf * 0.8, m))  # penaliza confianza
@@ -326,12 +332,72 @@ def ocr_on_yellow(bgr_crop: np.ndarray) -> Tuple[str, float]:
     except Exception as e:
         print(f'  [vision] OCR yellow error: {e}')
 
+    # BUGFIX: si todos los intentos de ROI fallaron, probar con todo el crop
+    return _ocr_fallback_full_crop(bgr_crop, reader)
+
+
+def _ocr_fallback_full_crop(bgr_crop: np.ndarray, reader) -> Tuple[str, float]:
+    """
+    BUGFIX: Fallback agresivo cuando el ROI por color falla.
+    Corre OCR sobre todo el crop (escaneo completo) y filtra por patron de ID.
+    Penaliza la confianza porque no tenemos la heuristica del color.
+    """
+    if bgr_crop is None or bgr_crop.size == 0 or reader is None:
+        return 'unknown', 0.0
+
+    try:
+        h, w = bgr_crop.shape[:2]
+        # Upscale si es muy chico
+        scale = max(1.0, 400.0 / max(w, h))
+        if scale > 1.0:
+            bgr_crop = cv2.resize(bgr_crop, None, fx=scale, fy=scale,
+                                   interpolation=cv2.INTER_CUBIC)
+
+        candidates = []
+        # Intento 1: BGR directo
+        try:
+            results = reader.readtext(bgr_crop, detail=1,
+                                       allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+            for (_, text, conf) in results:
+                cleaned = text.strip().upper().replace(' ', '').replace('O', '0')
+                matches = TRUCK_ID_PATTERN.findall(cleaned)
+                if matches and conf >= 0.15:
+                    for m in matches:
+                        if 2 <= len(m) <= 4:
+                            # Penaliza 30% porque es sin guia de color
+                            candidates.append((conf * 0.7, m))
+        except Exception:
+            pass
+
+        # Intento 2: gray + CLAHE
+        try:
+            gray = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(4, 4))
+            enhanced = clahe.apply(gray)
+            results = reader.readtext(enhanced, detail=1, allowlist='0123456789')
+            for (_, text, conf) in results:
+                cleaned = text.strip().replace(' ', '').replace('O', '0')
+                matches = TRUCK_ID_PATTERN.findall(cleaned)
+                if matches and conf >= 0.15:
+                    for m in matches:
+                        if 2 <= len(m) <= 4:
+                            candidates.append((conf * 0.7, m))
+        except Exception:
+            pass
+
+        if candidates:
+            best_conf, best_id = max(candidates, key=lambda x: x[0])
+            return best_id, float(min(1.0, best_conf))
+    except Exception as e:
+        print(f'  [vision] OCR fallback error: {e}')
+
     return 'unknown', 0.0
 
 
 def ocr_on_red(bgr_crop: np.ndarray) -> Tuple[str, float, str]:
     """
     OCR sobre la region roja encontrada (display LED balanza).
+    BUGFIX: si no hay ROI rojo, intenta OCR sobre el crop entero buscando números tipo peso.
     Devuelve (peso_str, confianza, unidad).
     """
     if bgr_crop is None or bgr_crop.size == 0:
@@ -342,7 +408,8 @@ def ocr_on_red(bgr_crop: np.ndarray) -> Tuple[str, float, str]:
 
     roi_bbox = find_red_roi(bgr_crop)
     if roi_bbox is None:
-        return '—', 0.0, 't'
+        # BUGFIX: fallback — corre OCR sobre todo el crop buscando patrón de peso
+        return _ocr_weight_fallback(bgr_crop, reader)
     x, y, w, h = roi_bbox
 
     # Padding para mas contexto
@@ -427,6 +494,51 @@ def ocr_on_red(bgr_crop: np.ndarray) -> Tuple[str, float, str]:
             return val_str, float(min(1.0, conf)), unit
     except Exception as e:
         print(f'  [vision] OCR red error: {e}')
+
+    # BUGFIX: fallback final — probar sobre todo el crop
+    return _ocr_weight_fallback(bgr_crop, reader)
+
+
+def _ocr_weight_fallback(bgr_crop: np.ndarray, reader) -> Tuple[str, float, str]:
+    """
+    BUGFIX: Fallback para peso cuando no encontramos ROI rojo.
+    Escanea todo el crop y busca números plausibles de peso (0-500).
+    """
+    if bgr_crop is None or bgr_crop.size == 0 or reader is None:
+        return '—', 0.0, 't'
+
+    try:
+        h, w = bgr_crop.shape[:2]
+        scale = max(1.0, 400.0 / max(w, h))
+        if scale > 1.0:
+            bgr_crop = cv2.resize(bgr_crop, None, fx=scale, fy=scale,
+                                   interpolation=cv2.INTER_CUBIC)
+
+        candidates = []
+        try:
+            results = reader.readtext(bgr_crop, detail=1, allowlist='0123456789.,-')
+            for (_, text, conf) in results:
+                cleaned = text.strip().replace(' ', '').replace(',', '.')
+                matches = WEIGHT_DISPLAY_PATTERN.findall(cleaned)
+                if matches and conf >= 0.15:
+                    for m in matches:
+                        try:
+                            val = float(m)
+                            if 0 < val <= 500:
+                                # Penaliza 30% por falta de guía de color
+                                candidates.append((conf * 0.7, m, val))
+                        except ValueError:
+                            continue
+        except Exception:
+            pass
+
+        if candidates:
+            best = max(candidates, key=lambda x: x[0])
+            conf, val_str, val_float = best
+            unit = 't' if val_float >= 20 else '%'
+            return val_str, float(min(1.0, conf)), unit
+    except Exception as e:
+        print(f'  [vision] OCR weight fallback error: {e}')
 
     return '—', 0.0, 't'
 

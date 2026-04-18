@@ -105,6 +105,13 @@ class IPOResult:
     band_color:       str
     recommendation:   str
 
+    # ── Validación visual (dual-source) ─────────────────────────────────────
+    ipo_validated:          float = 0.0   # IPO ajustado por validación visual
+    visual_agreement_pct:   float = 0.0   # % acuerdo IMU↔cámara (0-100)
+    confidence:             str   = 'N/A' # HIGH | MEDIUM | LOW
+    eta_M_validated:        float = 0.0   # eta_M corregido por motion visual
+    # Reduce si hay mucho tiempo donde cámara NO ve movimiento durante cycles
+
     # Debug / auditoria
     notes:            List[str] = field(default_factory=list)
 
@@ -112,20 +119,26 @@ class IPOResult:
 # ─── CALCULO PRINCIPAL ────────────────────────────────────────────────────────
 
 def compute_ipo(cycles, wait_events, alerts, transport, metrics,
-                t_turno_s: float = T_TURNO_S) -> IPOResult:
+                t_turno_s: float = T_TURNO_S,
+                visual_validation: Optional[Dict] = None) -> IPOResult:
     """
     Calcula el IPO completo y todos sus componentes desde los datos del pipeline.
 
     Args:
-        cycles:       lista de LoadCycle
-        wait_events:  lista de WaitEvent
-        alerts:       lista de Alert
-        transport:    TransportMetrics
-        metrics:      SessionMetrics
-        t_turno_s:    Duracion del turno (default 8h)
+        cycles:            lista de LoadCycle
+        wait_events:       lista de WaitEvent
+        alerts:            lista de Alert
+        transport:         TransportMetrics
+        metrics:           SessionMetrics
+        t_turno_s:         Duracion del turno (default 8h)
+        visual_validation: Dict con datos de motion_detector (optional).
+                           Si se provee, el IPO se ENRIQUECE con:
+                             - eta_M_validated (corregido por motion visual)
+                             - ipo_validated (IPO ajustado por acuerdo IMU↔cámara)
+                             - confidence score dual-source
 
     Returns:
-        IPOResult con ipo y todos los desgloses.
+        IPOResult con ipo y todos los desgloses (incluye validación visual si aplica).
     """
     notes: List[str] = []
     full_cycles = [c for c in cycles if not c.is_mini_cycle]
@@ -240,6 +253,41 @@ def compute_ipo(cycles, wait_events, alerts, transport, metrics,
 
     band = classify_ipo(ipo)
 
+    # ── VALIDACIÓN VISUAL (dual-source) ──────────────────────────────────────
+    # Si tenemos motion data, ajustamos eta_M y el IPO global.
+    # La idea es: si durante los cycles la cámara confirma movimiento,
+    # eta_M es real. Si no, hay que descontar.
+    eta_M_val = eta_M
+    ipo_val = ipo
+    agreement_pct = 0.0
+    confidence = 'N/A'
+
+    if visual_validation:
+        verified = visual_validation.get('verified_idle', {})
+        agreement_pct = float(verified.get('agreement_pct', 0.0))
+        confidence    = verified.get('confidence', 'N/A')
+
+        # eta_M_validated: eta_M * fraction of cycles where motion was confirmed
+        # cycle_confidence = list[{cycle_id, motion_score, confidence, ...}]
+        cycle_confs = visual_validation.get('cycle_confidence', [])
+        if cycle_confs:
+            # Fraction of cycles con HIGH confidence visual
+            high_conf_cycles = sum(1 for cc in cycle_confs if cc.get('confidence') == 'HIGH')
+            total_cycles_val = len(cycle_confs)
+            if total_cycles_val > 0:
+                motion_confirmation_ratio = high_conf_cycles / total_cycles_val
+                # Ponderamos: eta_M * motion_confirmation
+                # Si 100% de cycles están confirmados visualmente → eta_M_val = eta_M
+                # Si 50% → eta_M_val = eta_M * 0.75 (promedio entre eta_M y eta_M*0.5)
+                eta_M_val = eta_M * (0.5 + 0.5 * motion_confirmation_ratio)
+                eta_M_val = float(np.clip(eta_M_val, 0.0, 1.0))
+
+        # ipo_validated: IPO con eta_M ajustado
+        ipo_val = eta_R * eta_M_val * DA * (1 - alpha_W) * (1 - alpha_DE)
+        ipo_val = float(np.clip(ipo_val, 0.0, 1.0))
+
+        notes.append(f'Validación visual dual-source aplicada (acuerdo {agreement_pct:.1f}%).')
+
     return IPOResult(
         ipo=round(ipo, 3),
         v_nom=V_NOM_M3,
@@ -264,6 +312,10 @@ def compute_ipo(cycles, wait_events, alerts, transport, metrics,
         band=band['band'],
         band_color=band['color'],
         recommendation=band['recommendation'],
+        ipo_validated=round(ipo_val, 3),
+        eta_M_validated=round(eta_M_val, 3),
+        visual_agreement_pct=round(agreement_pct, 1),
+        confidence=confidence,
         notes=notes,
     )
 
