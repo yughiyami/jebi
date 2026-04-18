@@ -725,14 +725,14 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
     <div class="sec-title">Video Estereo &mdash; Camara Izquierda / Derecha</div>
     <div class="video-wrap">
       <div class="video-overlay" style="flex:1">
-        <div class="video-label">CAM IZQUIERDA</div>
+        <div class="video-label">CAM IZQUIERDA (controla ambos videos)</div>
         <video id="vid-left" src="../inputs/shovel_left.mp4"
-               muted playsinline preload="auto"
+               muted playsinline preload="auto" controls
                style="width:100%;height:240px;object-fit:cover;border-radius:6px"></video>
         <div class="ov" id="vid-left-info">t=0.0s</div>
       </div>
       <div class="video-overlay" style="flex:1">
-        <div class="video-label">CAM DERECHA</div>
+        <div class="video-label">CAM DERECHA (sigue a la izquierda)</div>
         <video id="vid-right" src="../inputs/shovel_right.mp4"
                muted playsinline preload="auto"
                style="width:100%;height:240px;object-fit:cover;border-radius:6px"></video>
@@ -1008,15 +1008,22 @@ const DARK_LAYOUT = {{
 }};
 
 // ── STATE ───────────────────────────────────────────────────────────────────
+// REDISEÑO: el VIDEO es la fuente única de verdad. El timeline lo sigue.
+// Antes había dos "relojes" (tick() y video.currentTime) que se desincronizaban.
 let curIdx   = 0;
 let playing  = false;
 let playTimer= null;
-let speed    = 1;        // steps per tick
+let speed    = 1;        // playback rate del video
 let alertsShown = new Set();
 let totalAlerts = 0;
+let seekingFromUI = false;  // flag para evitar loops de seek
 
 const vidL = document.getElementById('vid-left');
 const vidR = document.getElementById('vid-right');
+
+// Constante: cada snapshot está separado por step_s (0.5s).
+// Conversión t <-> idx: idx = round(t / step_s)
+const STEP_S = TL.length > 1 ? (TL[1].t - TL[0].t) : 0.5;
 
 // ── PLAYBACK ────────────────────────────────────────────────────────────────
 function togglePlay() {{
@@ -1025,9 +1032,9 @@ function togglePlay() {{
     ? '&#9646;&#9646; PAUSE' : '&#9654; PLAY';
 
   if (playing) {{
-    // FIX: Si el video esta pausado, lo arrancamos (antes estaba al reves)
-    if (vidL.paused) vidL.play().catch(e => console.warn('vidL play error:', e));
-    if (vidR.paused) vidR.play().catch(e => console.warn('vidR play error:', e));
+    vidL.play().catch(e => console.warn('vidL play error:', e));
+    vidR.play().catch(e => console.warn('vidR play error:', e));
+    // Tick rápido solo para actualizar UI desde el video (video ES la verdad)
     playTimer = setInterval(tick, 100);
   }} else {{
     vidL.pause(); vidR.pause();
@@ -1039,25 +1046,85 @@ function setSpeed(s, btn) {{
   speed = s;
   document.querySelectorAll('.speed-btn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  // Ajustar playback rate del video proporcional
+  // playbackRate del video: fuente de verdad única
   const vr = Math.min(s, 16);
-  vidL.playbackRate = vr; vidR.playbackRate = vr;
+  vidL.playbackRate = vr;
+  vidR.playbackRate = vr;
 }}
 
+// tick(): sigue al video. Si el video avanza, actualizamos curIdx y UI.
 function tick() {{
-  curIdx = Math.min(curIdx + speed, TL.length - 1);
-  update(curIdx);
-  if (curIdx >= TL.length - 1) {{
+  if (!vidL || vidL.readyState < 2) return;  // video no está listo, esperar
+
+  const t = vidL.currentTime;
+  const idx = Math.min(Math.max(0, Math.round(t / STEP_S)), TL.length - 1);
+
+  if (idx !== curIdx) {{
+    curIdx = idx;
+    update(curIdx);
+  }}
+
+  // Detectar si llegamos al final
+  if (vidL.ended || t >= vidL.duration - 0.1) {{
     playing = false;
     document.getElementById('play-btn').innerHTML = '&#9654; PLAY';
     clearInterval(playTimer);
-    vidL.pause(); vidR.pause();
   }}
 }}
 
+// seekTo: llamado por el slider del progress bar
 function seekTo(idx) {{
+  seekingFromUI = true;
   curIdx = Math.min(Math.max(0, idx), TL.length - 1);
+  const t = TL[curIdx].t;
+  // Sincronizar videos al seek
+  if (vidL.readyState >= 1) vidL.currentTime = t;
+  if (vidR.readyState >= 1) vidR.currentTime = t;
   update(curIdx);
+  setTimeout(() => {{ seekingFromUI = false; }}, 50);
+}}
+
+// BUGFIX: Cuando el usuario mueve el video NATIVAMENTE (seek en el player),
+// también actualizamos el timeline. Antes se ignoraba.
+function _onVideoSeeked() {{
+  if (seekingFromUI) return;  // ya lo estamos manejando
+  const t = vidL.currentTime;
+  const idx = Math.min(Math.max(0, Math.round(t / STEP_S)), TL.length - 1);
+  if (idx !== curIdx) {{
+    curIdx = idx;
+    update(curIdx);
+  }}
+}}
+
+// BUGFIX: Durante play natural del video, también actualizamos UI
+function _onVideoTimeUpdate() {{
+  if (!playing) {{
+    // Usuario está mirando video pero sin haber dado play desde el UI
+    // → igual trackear
+    const t = vidL.currentTime;
+    const idx = Math.min(Math.max(0, Math.round(t / STEP_S)), TL.length - 1);
+    if (idx !== curIdx) {{
+      curIdx = idx;
+      update(curIdx);
+    }}
+  }}
+}}
+
+// Registrar listeners del video
+if (vidL) {{
+  vidL.addEventListener('seeked', _onVideoSeeked);
+  vidL.addEventListener('timeupdate', _onVideoTimeUpdate);
+  // Sincronizar el right cuando el user mueve el left
+  vidL.addEventListener('seeking', () => {{
+    if (vidR && Math.abs(vidR.currentTime - vidL.currentTime) > 0.3) {{
+      vidR.currentTime = vidL.currentTime;
+    }}
+  }});
+  // Si el navegador pausa por buffering, mantener sincronizado el right
+  vidL.addEventListener('waiting', () => {{ if (vidR) vidR.pause(); }});
+  vidL.addEventListener('playing', () => {{
+    if (vidR && playing) vidR.play().catch(()=>{{}});
+  }});
 }}
 
 // ── MAIN UPDATE ─────────────────────────────────────────────────────────────
@@ -1070,11 +1137,7 @@ function update(idx) {{
   document.getElementById('t-display').textContent = t.toFixed(1) + ' s';
   document.getElementById('live-clock').textContent = 't = ' + t.toFixed(1) + ' s';
 
-  // Sync video (if not playing — when playing, video runs on its own)
-  if (!playing) {{
-    if (Math.abs(vidL.currentTime - t) > 0.5) vidL.currentTime = t;
-    if (Math.abs(vidR.currentTime - t) > 0.5) vidR.currentTime = t;
-  }}
+  // Video info overlays (siempre sincronizados)
   document.getElementById('vid-left-info').textContent  = 't=' + t.toFixed(1) + 's';
   document.getElementById('vid-right-info').textContent = 't=' + t.toFixed(1) + 's';
 
