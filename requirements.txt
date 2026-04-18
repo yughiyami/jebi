@@ -3,6 +3,10 @@ numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.11.0
 
-# OCR para deteccion de numero de camion (opcional pero recomendado)
+# OCR para deteccion de numero de camion y medidor de peso
 # Si falla la instalacion, el sistema usa clasificacion visual como fallback
 easyocr>=1.7.0
+
+# YOLO26 (Ultralytics 2026) para deteccion precisa de camiones.
+# Si falla, el pipeline sigue funcionando con el detector visual legacy.
+ultralytics>=8.3.0

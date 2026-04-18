@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from imu_processor import load_imu, detect_cycles, cycles_to_dataframe
 from video_processor import process_video_events
 from metrics import (compute_efficiency_profiles, compute_truck_loads,
-                     compute_transport_metrics, build_realtime_timeline)
+                     compute_transport_metrics, build_realtime_timeline,
+                     compute_wear_score, extract_spill_events)
 from reporter import generate_report
 
 INPUT_FILES = {
@@ -54,23 +55,35 @@ def run(inputs_dir, outputs_dir):
     print(f'  Mini-ciclos      : {len(mini)}')
     print(f'  Wait events      : {len(waits)}')
 
-    # ── 3. Video (backtracking) ───────────────────────────────────────────────
+    # ── 3. Video (backtracking + YOLO26 + OCR) ────────────────────────────────
     left_path  = find_input(inputs_dir, INPUT_FILES['left'])
     right_path = find_input(inputs_dir, INPUT_FILES['right'])
-    video_events = []
+    video_events: list = []
+    ocr_events:   list = []
+    dust_index:   dict = {}
     if left_path and right_path:
-        print('\n[3/6] Backtracking video...')
-        video_events = process_video_events(left_path, right_path, cycles, waits)
+        print('\n[3/6] Backtracking video + YOLO26 + OCR...')
+        video_result = process_video_events(left_path, right_path, cycles, waits)
+        video_events = video_result.get('events', [])
+        ocr_events   = video_result.get('ocr_events', [])
+        dust_index   = video_result.get('dust_index', {})
+        print(f'  Eventos video : {len(video_events)}')
+        print(f'  OCR readings  : {len(ocr_events)}')
+        print(f'  Dust index avg: {dust_index.get("avg", 0):.1f}%')
     else:
         print('\n[3/6] Video no disponible')
 
     # ── 4. Eficiencias y alertas ─────────────────────────────────────────────
-    print('\n[4/6] Calculando eficiencias y alertas...')
+    print('\n[4/6] Calculando eficiencias, alertas, wear y desperdicios...')
     profiles, alerts = compute_efficiency_profiles(cycles, waits, df)
     truck_events     = compute_truck_loads(cycles, video_events)
     transport        = compute_transport_metrics(truck_events, waits, df.attrs['duration_s'])
+    wear_score       = compute_wear_score(alerts, df, cycles)
+    spill_events     = extract_spill_events(alerts)
     print(f'  Alertas generadas: {len(alerts)}')
     print(f'  Camiones trackados: {transport.n_trucks_served}')
+    print(f'  Wear score total: {wear_score.get("total_score", 0):.1f}')
+    print(f'  Spill events     : {len(spill_events)}')
 
     # ── 5. Timeline real-time ─────────────────────────────────────────────────
     print('\n[5/6] Construyendo timeline real-time...')
@@ -124,7 +137,25 @@ def run(inputs_dir, outputs_dir):
         profiles=profiles, alerts=alerts,
         truck_events=truck_events, transport=transport,
         timeline=timeline,
+        ocr_events=ocr_events, wear_score=wear_score,
+        spill_events=spill_events, dust_index=dust_index,
     )
+
+    # OCR readings CSV
+    if ocr_events:
+        pd.DataFrame([dict(
+            t=ev.get('timestamp_s', 0),
+            cycle_id=ev.get('cycle_id', 0),
+            truck_id=ev.get('truck_id_ocr', 'unknown'),
+            conf_id=round(ev.get('confidence_id', 0), 2),
+            weight=ev.get('weight_reading', '—'),
+            weight_unit=ev.get('weight_unit', ''),
+            conf_weight=round(ev.get('confidence_weight', 0), 2),
+            model=ev.get('truck_model', 'unknown'),
+            position_score=ev.get('position_score', 0),
+            method=ev.get('method', 'none'),
+        ) for ev in ocr_events]).to_csv(
+            os.path.join(outputs_dir, 'ocr_readings.csv'), index=False)
 
     print(f'\n{"="*60}')
     print(f'  Listo en {time.time()-t0:.1f}s')

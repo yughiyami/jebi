@@ -38,3 +38,12 @@ package-lock.json
 *.key
 ANTHROPIC_API_KEY
 .anthropic/
+
+# Modelos YOLO / pesos ML (se descargan automaticamente al correr)
+*.pt
+*.onnx
+*.engine
+yolo*.pt
+yolo26*.pt
+yolo11*.pt
+yolov8*.pt

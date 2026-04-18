@@ -20,6 +20,14 @@ try:
 except ImportError:
     OCR_AVAILABLE = False
 
+# Vision detector avanzado (YOLO26 + OCR especializado)
+try:
+    from vision_detector import analyze_frame, compute_dust_index
+    VISION_V2_AVAILABLE = True
+except ImportError:
+    VISION_V2_AVAILABLE = False
+    print('  [video] vision_detector no disponible, usando metodo legacy')
+
 # ─── CONFIGURACION ────────────────────────────────────────────────────────────
 
 FRAME_THUMB_W  = 480
@@ -295,51 +303,88 @@ def process_video_events(
     right_path: str,
     cycles,         # List[LoadCycle]
     wait_events,    # List[WaitEvent]
-) -> List[Dict]:
+) -> Dict:
     """
     Pipeline completo de video:
       1. Recoge timestamps de todos los dumps (backtracking)
       2. Extrae frames de ambas camaras
-      3. Detecta truck ID en cada frame
+      3. YOLO26 + OCR (ID + medidor peso) sobre cada dump
       4. Asigna truck_id a cada ciclo
-      5. Genera thumbnails para el dashboard
-    
-    Retorna lista de event_dicts listos para el reporter.
+      5. Genera thumbnails + frames anotados para el dashboard
+      6. Calcula dust index por frame (para BPMN node Aire)
+
+    Retorna dict con:
+      {
+        'events':      list legacy (thumb_b64, truck_id, ...)   <- compat
+        'ocr_events':  list con OCR completo + frame anotado
+        'dust_index':  {'avg':float, 'max':float, 'high_count':int}
+      }
     """
     # ── Recolectar timestamps de interes ──────────────────────────────────────
     event_timestamps = {}
     for c in cycles:
         if c.t_dump is not None:
             event_timestamps[c.t_dump] = ('dump', c.cycle_id)
-        # Tambien capturar inicio del swing (antes de que empiece el polvo)
         event_timestamps[c.t_start] = ('start', c.cycle_id)
 
     ts_list = sorted(event_timestamps.keys())
 
     if not ts_list:
-        return []
+        return {'events': [], 'ocr_events': [], 'dust_index': {}}
 
     # ── Backtracking ──────────────────────────────────────────────────────────
     print(f"  [video] Backtracking a {len(ts_list)} timestamps clave...")
     stereo = extract_stereo_frames(left_path, right_path, ts_list, offset_s=-1.0)
 
-    # ── Deteccion de camion y thumbnails ─────────────────────────────────────
-    events = []
-    # Acumular truck IDs por ciclo para asignar al LoadCycle
-    cycle_truck = {}
+    # ── Deteccion YOLO26 + OCR + thumbnails ───────────────────────────────────
+    events: List[Dict] = []
+    ocr_events: List[Dict] = []
+    cycle_truck: Dict[int, Dict] = {}
+    dust_scores: List[float] = []
 
+    print('  [video] Corriendo YOLO26 + OCR sobre eventos clave...')
     for ts in ts_list:
         ev_type, cycle_id = event_timestamps[ts]
         left_f  = stereo[ts].get('left')
         right_f = stereo[ts].get('right')
 
-        # Detectar truck en frame izquierdo (generalmente mejor angulo)
-        truck_info = detect_truck(left_f) if left_f is not None else {
-            'truck_id': 'unknown', 'model': 'unknown',
-            'capacity_t': 219.0, 'confidence': 0.0, 'method': 'none'
-        }
+        # ── V2: YOLO26 + OCR completo sobre el frame izquierdo ───────────────
+        ocr_data = None
+        if VISION_V2_AVAILABLE and left_f is not None:
+            try:
+                ocr_data = analyze_frame(left_f, ts, cycle_id, ev_type)
+            except Exception as e:
+                print(f"    [video] analyze_frame fallo en t={ts:.1f}: {e}")
+                ocr_data = None
 
-        # Thumbnail combinado
+            # Dust index del frame
+            try:
+                dust_scores.append(compute_dust_index(left_f))
+            except Exception:
+                pass
+
+        # ── Truck info consolidada (YOLO preferido, fallback legacy) ─────────
+        if ocr_data and ocr_data.get('truck_detected'):
+            truck_info = {
+                'truck_id':   (ocr_data.get('truck_id_ocr', 'unknown')
+                               if ocr_data.get('truck_id_ocr') != 'unknown'
+                               else f"T-{cycle_id:03d}"),
+                'model':      ocr_data.get('truck_model', 'unknown'),
+                'capacity_t': ocr_data.get('capacity_t', 219.0),
+                'confidence': ocr_data.get('confidence_id', 0.0),
+                'method':     'yolo26+ocr',
+            }
+            # Registrar OCR event completo
+            if ev_type == 'dump':
+                ocr_events.append(ocr_data)
+        else:
+            # Fallback visual legacy
+            truck_info = detect_truck(left_f) if left_f is not None else {
+                'truck_id': 'unknown', 'model': 'unknown',
+                'capacity_t': 219.0, 'confidence': 0.0, 'method': 'none',
+            }
+
+        # Thumbnail combinado (compatibilidad)
         thumb = build_stereo_thumb(
             left_f, right_f,
             label=f"Ciclo #{cycle_id} | {ev_type.upper()} | t={ts:.1f}s"
@@ -366,5 +411,23 @@ def process_video_events(
             info = cycle_truck[c.cycle_id]
             c.truck_id = info['truck_id']
 
-    print(f"  [video] {len(events)} eventos procesados")
-    return events
+    # ── Dust index agregado ───────────────────────────────────────────────────
+    if dust_scores:
+        dust_avg = float(np.mean(dust_scores))
+        dust_max = float(np.max(dust_scores))
+        high_count = int(sum(1 for d in dust_scores if d > 60))
+    else:
+        dust_avg, dust_max, high_count = 0.0, 0.0, 0
+
+    print(f"  [video] {len(events)} eventos + {len(ocr_events)} OCR events procesados")
+
+    return {
+        'events':     events,
+        'ocr_events': ocr_events,
+        'dust_index': {
+            'avg':        round(dust_avg, 1),
+            'max':        round(dust_max, 1),
+            'high_count': high_count,
+            'n_samples':  len(dust_scores),
+        },
+    }

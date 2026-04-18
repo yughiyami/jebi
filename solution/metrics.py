@@ -530,3 +530,96 @@ def _phase_at(ts: float, cycle) -> str:
     if ts < (cycle.t_dump or cycle.t_end):
         return 'DIG'
     return 'REPOSITION'
+
+
+# ─── WEAR SCORE + SPILL + MATERIAL HARDNESS (BPMN extendido) ─────────────────
+
+def compute_wear_score(alerts: List[Alert], df_imu: pd.DataFrame, cycles) -> Dict:
+    """
+    Calcula un score de desgaste acumulado del equipo.
+
+    Combina:
+      - Impactos duros durante DIG (peso 3)
+      - Dumps bruscos (peso 2)
+      - Mini-ciclos (peso 0.5)
+      - Vibracion media global (peso 1)
+
+    Ademas estima la dureza del material (material_hardness 0-1)
+    desde la aceleracion RMS durante DIG.
+
+    Retorna dict con:
+      total_score:       float  (0-100 aprox)
+      hard_impacts:      int
+      rough_dumps:       int
+      mini_cycles:       int
+      vibration_rms:     float
+      material_hardness: float (0-1)
+    """
+    hard_impacts = sum(1 for a in alerts if a.alert_type == 'HARD_IMPACT')
+    rough_dumps  = sum(1 for a in alerts if a.alert_type == 'ROUGH_DUMP')
+    mini_cyc     = sum(1 for a in alerts if a.alert_type == 'MINI_CYCLE')
+
+    # Vibracion RMS global (indicador constante de estres)
+    an = df_imu.accel_norm.values if hasattr(df_imu, 'accel_norm') else np.array([])
+    vib_rms = float(np.sqrt(np.mean(np.square(an - np.mean(an))))) if len(an) else 0.0
+
+    # Score compuesto (aproxima 0-100)
+    raw = (hard_impacts * 3.0 +
+           rough_dumps * 2.0 +
+           mini_cyc * 0.5 +
+           vib_rms * 0.8)
+    # Normalizar a ~0-100 asumiendo 30 eventos severos ≈ 100
+    total_score = min(100.0, raw * 2.0)
+
+    # Material hardness: promedio del accel_norm durante DIG (inicio del ciclo)
+    hardness_scores = []
+    if len(an) > 0 and cycles:
+        t = df_imu.timestamp_s.values
+        for c in cycles:
+            if c.is_mini_cycle:
+                continue
+            i0 = np.searchsorted(t, c.t_start)
+            i1 = min(np.searchsorted(t, c.t_start + 3.0), len(an))
+            if i1 > i0:
+                dig_region = an[i0:i1]
+                # Normalizar: 10 m/s² = suave, 20+ m/s² = duro
+                hardness_scores.append(np.mean(dig_region))
+
+    if hardness_scores:
+        avg_dig_accel = float(np.mean(hardness_scores))
+        material_hardness = min(1.0, max(0.0, (avg_dig_accel - 8.0) / 14.0))
+    else:
+        material_hardness = 0.5
+
+    return {
+        'total_score':       round(total_score, 1),
+        'hard_impacts':      hard_impacts,
+        'rough_dumps':       rough_dumps,
+        'mini_cycles':       mini_cyc,
+        'vibration_rms':     round(vib_rms, 2),
+        'material_hardness': round(material_hardness, 2),
+    }
+
+
+def extract_spill_events(alerts: List[Alert]) -> List[Dict]:
+    """
+    Extrae todos los eventos que implican desperdicio de material:
+      - POSSIBLE_SPILL
+      - OVERFILL
+      - ROUGH_DUMP
+    Cada evento se convierte en un dict serializable.
+    """
+    spill_types = {'POSSIBLE_SPILL', 'OVERFILL', 'ROUGH_DUMP'}
+    out = []
+    for a in alerts:
+        if a.alert_type in spill_types:
+            out.append({
+                't':        round(a.timestamp_s, 2),
+                'cycle_id': a.cycle_id,
+                'type':     a.alert_type,
+                'value':    a.value,
+                'unit':     a.unit,
+                'severity': a.severity,
+                'message':  a.message,
+            })
+    return out
