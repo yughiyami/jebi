@@ -39,14 +39,16 @@ def generate_report(df_imu, cycles, wait_events, metrics,
                     timeline=None,
                     ocr_events=None, wear_score=None,
                     spill_events=None, dust_index=None,
-                    session_label='JEBI 2026 - EX-5600') -> str:
+                    ipo=None,
+                    session_label='DIG - EX-5600') -> str:
 
     html = _build(df_imu, cycles, wait_events, metrics,
                   video_events, profiles or [], alerts or [],
                   truck_events or [], transport,
                   timeline or [], session_label,
                   ocr_events or [], wear_score or {},
-                  spill_events or [], dust_index or {})
+                  spill_events or [], dust_index or {},
+                  ipo)
 
     path = os.path.join(output_dir, 'dashboard.html')
     with open(path, 'w', encoding='utf-8') as f:
@@ -59,7 +61,8 @@ def generate_report(df_imu, cycles, wait_events, metrics,
 
 def _build(df_imu, cycles, wait_events, metrics, video_events,
            profiles, alerts, truck_events, transport, timeline, label,
-           ocr_events=None, wear_score=None, spill_events=None, dust_index=None):
+           ocr_events=None, wear_score=None, spill_events=None, dust_index=None,
+           ipo=None):
 
     t   = df_imu.timestamp_s.values.tolist()
     ax  = df_imu.ax.values.tolist()
@@ -98,19 +101,54 @@ def _build(df_imu, cycles, wait_events, metrics, video_events,
     bpmn_html   = _bpmn_coverage(metrics, transport, wear_score or {},
                                   spill_events or [], dust_index or {}, alerts)
     help_html   = _help_content()
+    ipo_html    = _ipo_view(ipo)
 
     return f"""<!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="dark">
 <head>
 <meta charset="UTF-8">
-<title>Shovel Intelligence | {label}</title>
+<title>DIG | {label}</title>
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.159.0/three.min.js"></script>
+<script>window.MathJax={{tex:{{inlineMath:[['$','$'],['\\\\(','\\\\)']]}},svg:{{fontCache:'global'}}}};</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 <style>
+/* ═══════════════════ CSS VARIABLES — TEMAS ═══════════════════ */
+[data-theme="dark"] {{
+  --bg:       #0d1117; --panel:   #161b22; --panel2:  #1c2128; --border:  #30363d;
+  --text:     #e6edf3; --muted:   #8b949e;
+  --blue:     #4a9eff; --orange:  #ff8c00; --green:   #3fb950;
+  --red:      #f85149; --yellow:  #ffd700; --purple:  #bc8cff; --cyan:    #39d353;
+  --critical: #f85149; --warning: #ffd700; --info:    #4a9eff; --success: #3fb950;
+  --shadow:   0 0 60px rgba(248,81,73,.4);
+}}
+[data-theme="light"] {{
+  --bg:       #f5f7fa; --panel:   #ffffff; --panel2:  #eef2f6; --border:  #d0d7de;
+  --text:     #1f2328; --muted:   #636c76;
+  --blue:     #0969da; --orange:  #bc4c00; --green:   #1a7f37;
+  --red:      #cf222e; --yellow:  #9a6700; --purple:  #8250df; --cyan:    #0a3069;
+  --critical: #cf222e; --warning: #9a6700; --info:    #0969da; --success: #1a7f37;
+  --shadow:   0 0 60px rgba(207,34,46,.25);
+}}
+
 *{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:{C['bg']};color:{C['text']};font-family:-apple-system,'Segoe UI',sans-serif;font-size:13px;line-height:1.5}}
-::-webkit-scrollbar{{width:6px;height:6px}}::-webkit-scrollbar-track{{background:{C['panel']}}}::-webkit-scrollbar-thumb{{background:{C['border']};border-radius:3px}}
+body{{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',sans-serif;font-size:13px;line-height:1.5;transition:background .2s,color .2s}}
+::-webkit-scrollbar{{width:6px;height:6px}}::-webkit-scrollbar-track{{background:var(--panel)}}::-webkit-scrollbar-thumb{{background:var(--border);border-radius:3px}}
+
+/* Reglas var-based que reemplazan valores hardcoded fuera de templates Python */
+.theme-aware{{color:var(--text);background:var(--panel);border-color:var(--border)}}
+.tv-text{{color:var(--text)}} .tv-muted{{color:var(--muted)}} .tv-bg{{background:var(--bg)}}
+.tv-panel{{background:var(--panel)}} .tv-border{{border-color:var(--border)}}
+.tv-blue{{color:var(--blue)}} .tv-green{{color:var(--green)}} .tv-red{{color:var(--red)}}
+.tv-yellow{{color:var(--yellow)}}
+
+/* Theme toggle button */
+.theme-toggle{{background:transparent;border:1px solid var(--border);color:var(--text);
+  border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;
+  display:inline-flex;align-items:center;justify-content:center;transition:all .2s;margin-right:6px}}
+.theme-toggle:hover{{background:var(--panel2);border-color:var(--blue)}}
 
 /* HEADER */
 .hdr{{background:{C['panel']};border-bottom:1px solid {C['border']};padding:10px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}}
@@ -271,6 +309,38 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
 .ocr-weight{{font-size:1.1rem;font-weight:600;color:{C['yellow']};font-family:monospace;margin-top:2px}}
 .ocr-meta{{font-size:0.68rem;color:{C['muted']};margin-top:4px;display:flex;justify-content:space-between}}
 
+/* ═══ ALERT MINI-CLIPS GRID ═══ */
+.alert-grid-clips{{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}}
+.alert-clip-card{{background:{C['panel']};border:1px solid {C['border']};border-radius:10px;overflow:hidden;display:flex;flex-direction:column}}
+.alert-clip-card.sev-critical{{border-left:4px solid {C['red']}}}
+.alert-clip-card.sev-warning{{border-left:4px solid {C['yellow']}}}
+.alert-clip-card.sev-info{{border-left:4px solid {C['blue']}}}
+.alert-clip-card.sev-success{{border-left:4px solid {C['green']}}}
+.alert-clip-video{{width:100%;aspect-ratio:16/9;background:#000;display:block}}
+.alert-clip-body{{padding:10px 12px;flex:1;display:flex;flex-direction:column;gap:6px}}
+.alert-clip-head{{display:flex;align-items:center;justify-content:space-between;gap:8px}}
+.alert-clip-type{{font-weight:700;font-size:0.85rem}}
+.alert-clip-time{{font-family:monospace;color:{C['yellow']};font-size:0.78rem}}
+.alert-clip-msg{{font-size:0.78rem;color:{C['muted']};line-height:1.4}}
+.alert-clip-ctrl{{display:flex;gap:6px;padding:8px 12px;background:{C['panel2']};border-top:1px solid {C['border']}}}
+.alert-clip-ctrl button{{flex:1;background:transparent;border:1px solid {C['border']};color:{C['text']};padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.7rem}}
+.alert-clip-ctrl button:hover{{background:{C['blue']};color:#fff;border-color:{C['blue']}}}
+
+/* ═══ IPO VISTA MAESTRA ═══ */
+.ipo-hero{{background:linear-gradient(135deg,{C['panel']} 0%,{C['panel2']} 100%);border:1px solid {C['border']};border-radius:12px;padding:24px;text-align:center;margin-bottom:14px}}
+.ipo-big{{font-size:4rem;font-weight:800;font-family:'Segoe UI',monospace;line-height:1;margin:4px 0}}
+.ipo-band{{display:inline-block;padding:4px 14px;border-radius:14px;font-weight:700;font-size:0.85rem;letter-spacing:.08em;text-transform:uppercase;margin-top:10px}}
+.ipo-formula{{background:{C['panel2']};border:1px solid {C['border']};border-radius:8px;padding:16px 18px;margin:14px 0;font-size:1rem;overflow-x:auto;text-align:center}}
+.ipo-components{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:10px}}
+.ipo-comp-card{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;padding:12px}}
+.ipo-comp-sym{{font-family:monospace;font-size:0.75rem;color:{C['blue']};margin-bottom:3px}}
+.ipo-comp-val{{font-size:1.3rem;font-weight:700;font-family:monospace}}
+.ipo-comp-lbl{{font-size:0.68rem;color:{C['muted']};margin-top:2px}}
+.ipo-tbands{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}}
+.ipo-tband{{padding:10px;border-radius:6px;text-align:center;font-size:0.72rem;border:1px solid {C['border']}}}
+.ipo-tband b{{display:block;font-size:1rem;margin-bottom:2px}}
+.ipo-tband.active{{border-width:2px;box-shadow:0 0 10px rgba(74,158,255,.3)}}
+
 /* ═══ WEAR + DESPERDICIOS ═══ */
 .bpmn-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}}
 .bpmn-card{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;padding:14px}}
@@ -286,12 +356,13 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
 <!-- HEADER -->
 <div class="hdr">
   <div>
-    <h1>Shovel Intelligence Dashboard</h1>
+    <h1 style="letter-spacing:.15em">DIG <span style="font-size:.7rem;color:{C['muted']};font-weight:400;letter-spacing:.02em;margin-left:6px">Digital Intelligence for Geomining</span></h1>
     <div class="meta">JEBI Hackathon 2026 &nbsp;|&nbsp; Hitachi EX-5600 &nbsp;|&nbsp;
       CAT 793F (218t) &nbsp;&amp;&nbsp; EH4000 AC-3 (221t) &nbsp;|&nbsp; {now}
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
+    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Cambiar tema">🌙</button>
     <span id="phase-badge" class="badge">WAIT</span>
     <span id="live-clock">t = 0.0 s</span>
   </div>
@@ -325,6 +396,9 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   <div class="side-head">Vistas</div>
   <div class="side-item active" data-view="overview" onclick="switchView('overview')">
     <span class="side-icon">📊</span><span>Overview</span>
+  </div>
+  <div class="side-item" data-view="ipo" onclick="switchView('ipo')">
+    <span class="side-icon">🎯</span><span>IPO Maestro</span>
   </div>
   <div class="side-item" data-view="live" onclick="switchView('live')">
     <span class="side-icon">🎥</span><span>Video &amp; Live</span>
@@ -405,6 +479,20 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
     </div>
   </div>
 </div>
+
+<!-- ═══════════ VIEW: IPO MAESTRO ═══════════ -->
+<div class="view" id="view-ipo" data-view="ipo">
+  <div class="view-hdr">
+    <div>
+      <h2>IPO — Indice de Productividad Operativa</h2>
+      <div class="desc">Formula maestra del proceso minero con desglose por componente</div>
+    </div>
+    <div class="view-actions">
+      <button class="btn btn-primary" onclick="exportCurrentView()">📄 Exportar PDF</button>
+    </div>
+  </div>
+  {ipo_html}
+</div><!-- /view-ipo -->
 
 <!-- ═══════════ VIEW: LIVE ═══════════ -->
 <div class="view" id="view-live" data-view="live">
@@ -612,27 +700,28 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
 <div class="view" id="view-alerts" data-view="alerts">
   <div class="view-hdr">
     <div>
-      <h2>Alertas Historico Completo</h2>
-      <div class="desc">Todas las alertas de la sesion ordenadas por severidad y tiempo</div>
+      <h2>Alertas &mdash; Histórico + Mini-clips por evento</h2>
+      <div class="desc">Cada alerta se acompaña de un mini-clip de video de 3 segundos centrado en el timestamp del evento</div>
     </div>
     <div class="view-actions">
+      <button class="btn" onclick="alertFilter='all';renderFullAlertFeed()" id="af-all">Todas</button>
+      <button class="btn btn-danger" onclick="alertFilter='critical';renderFullAlertFeed()" id="af-crit">Criticas</button>
+      <button class="btn" onclick="alertFilter='warning';renderFullAlertFeed()" id="af-warn">Advertencias</button>
       <button class="btn btn-primary" onclick="exportCurrentView()">📄 Exportar PDF</button>
     </div>
   </div>
   <div class="sec">
-    <div class="sec-title">Feed completo</div>
-    <div class="panel" style="padding:10px">
-      <div id="alert-feed-full" style="max-height:600px;overflow-y:auto"></div>
-    </div>
+    <div class="sec-title">Feed con mini-clips (3s por evento)</div>
+    <div id="alert-feed-full" class="alert-grid-clips"></div>
   </div>
 </div><!-- /view-alerts -->
 
-<!-- ═══════════ VIEW: SIMULATOR ═══════════ -->
+<!-- ═══════════ VIEW: SIMULATOR 3D ═══════════ -->
 <div class="view" id="view-simulator" data-view="simulator">
   <div class="view-hdr">
     <div>
-      <h2>Simulador de Colocacion — Bueno vs Malo</h2>
-      <div class="desc">Visualizacion grafica de la posicion ideal del camion frente a la pala y errores comunes</div>
+      <h2>Simulador 3D — Colocación Pala-Camión</h2>
+      <div class="desc">Escena 3D interactiva con Three.js · rotar con mouse · comparar colocación óptima vs errores</div>
     </div>
     <div class="view-actions">
       <button class="btn btn-primary" onclick="exportCurrentView()">📄 Exportar PDF</button>
@@ -640,33 +729,39 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   </div>
   <div class="sec sim-wrap">
     <div class="sim-panel">
-      <h3 style="color:{C['green']}">✓ Colocacion Optima</h3>
-      <canvas id="sim-ok" class="sim-canvas sim-ok" width="640" height="360"></canvas>
+      <h3 style="color:{C['green']}">✓ Colocación Óptima 3D</h3>
+      <div id="sim3d-ok" class="sim-canvas sim-ok" style="height:360px"></div>
       <div class="sim-legend">
-        <span><span class="dot" style="background:{C['green']}"></span>Zona optima</span>
+        <span><span class="dot" style="background:{C['green']}"></span>Zona óptima</span>
         <span><span class="dot" style="background:{C['yellow']}"></span>Aceptable</span>
         <span><span class="dot" style="background:{C['red']}"></span>Rechazo</span>
       </div>
+      <div class="bpmn-note" style="margin-top:6px;text-align:center">
+        Arrastrá con el mouse para rotar · scroll para zoom
+      </div>
     </div>
     <div class="sim-panel">
-      <h3 style="color:{C['red']}">✗ Colocacion Incorrecta</h3>
-      <canvas id="sim-bad" class="sim-canvas sim-bad" width="640" height="360"></canvas>
+      <h3 style="color:{C['red']}">✗ Colocación Incorrecta 3D</h3>
+      <div id="sim3d-bad" class="sim-canvas sim-bad" style="height:360px"></div>
       <div class="sim-controls">
-        <button onclick="simScenario('offset')" class="active">Offset lateral</button>
-        <button onclick="simScenario('far')">Muy lejos</button>
-        <button onclick="simScenario('close')">Muy cerca</button>
-        <button onclick="simScenario('angle')">Mal angulo</button>
+        <button onclick="simScenario3D('offset',this)" class="active">Offset lateral</button>
+        <button onclick="simScenario3D('far',this)">Muy lejos</button>
+        <button onclick="simScenario3D('close',this)">Muy cerca</button>
+        <button onclick="simScenario3D('angle',this)">Mal ángulo</button>
+      </div>
+      <div id="sim3d-metrics" class="bpmn-note" style="margin-top:8px;text-align:center;font-family:monospace">
+        Distancia: — m · Offset: — m · Ángulo: —°
       </div>
     </div>
   </div>
   <div class="sec">
-    <div class="sec-title">Parametros de la Colocacion Ideal</div>
+    <div class="sec-title">Parámetros de la Colocación Ideal</div>
     <div class="glossary">
       <dl>
-        <dt>Distancia pala-camion</dt><dd>~12-15m del centro del balde. Si muy lejos: mas swing, perdida de tiempo. Si muy cerca: riesgo de contacto.</dd>
-        <dt>Angulo de pala</dt><dd>~90° respecto al eje del camion. Permite descarga centrada en tolva.</dd>
-        <dt>Offset lateral</dt><dd>Camion centrado ±1m del punto de descarga. Desviacion grande = derrames.</dd>
-        <dt>Altura tolva</dt><dd>Visible en frame superior. Debe estar por debajo de la parte mas alta del balde.</dd>
+        <dt>Distancia pala-camión</dt><dd>~12-15m del centro del balde. Si muy lejos: más swing, pérdida de tiempo. Si muy cerca: riesgo de contacto.</dd>
+        <dt>Ángulo de pala</dt><dd>~90° respecto al eje del camión. Permite descarga centrada en tolva.</dd>
+        <dt>Offset lateral</dt><dd>Camión centrado ±1m del punto de descarga. Desviación grande = derrames.</dd>
+        <dt>Altura tolva</dt><dd>Visible en frame superior. Debe estar por debajo de la parte más alta del balde.</dd>
       </dl>
     </div>
   </div>
@@ -994,6 +1089,9 @@ function switchView(name) {{
   // Render especificos por vista
   if (name === 'simulator') renderSimulators();
   if (name === 'alerts') renderFullAlertFeed();
+  if ((name === 'ipo' || name === 'help') && window.MathJax && window.MathJax.typesetPromise) {{
+    setTimeout(() => window.MathJax.typesetPromise([view]).catch(e => console.warn('MathJax:', e)), 60);
+  }}
 }}
 
 // ═══════════════════════════════════════════════════════════════
@@ -1052,35 +1150,124 @@ function queueCriticalIfNew(alert) {{
 }}
 
 // ═══════════════════════════════════════════════════════════════
-// ALERT FEED COMPLETO (vista Alerts)
+// ALERT FEED + MINI-CLIPS (vista Alerts)
 // ═══════════════════════════════════════════════════════════════
+let alertFilter = 'all';        // 'all' | 'critical' | 'warning' | 'info'
+const CLIP_DURATION_S = 3.0;    // segundos por clip (1.5 antes + 1.5 despues)
+
 function renderFullAlertFeed() {{
   const feed = document.getElementById('alert-feed-full');
   if (!feed) return;
   feed.innerHTML = '';
-  const sorted = [...ALL_ALERTS].sort((a,b) => {{
-    const sev = {{critical:0, warning:1, info:2, success:3}};
-    const sa = sev[a.sev] ?? 4, sb = sev[b.sev] ?? 4;
-    if (sa !== sb) return sa - sb;
-    return a.t - b.t;
+
+  // Resaltar boton activo
+  ['all','crit','warn'].forEach(k => {{
+    const map = {{'all':'all','crit':'critical','warn':'warning'}};
+    const btn = document.getElementById('af-'+k);
+    if (btn) btn.classList.toggle('btn-primary', alertFilter === map[k]);
   }});
-  sorted.forEach(a => {{
-    const el = document.createElement('div');
-    el.className = 'alert-item alert-' + (a.sev || 'info');
-    el.style.marginBottom = '5px';
-    el.innerHTML =
-      '<span class="alert-time">t=' + a.t.toFixed(1) + 's</span>' +
-      '<b>' + a.type + '</b>: ' + a.msg +
-      (a.val != null ? ' <span style="opacity:.8">['+a.val+' '+(a.unit||'')+']</span>' : '') +
-      ' <span style="opacity:.6">| Ciclo #' + (a.cid||'—') + '</span>';
-    feed.appendChild(el);
+
+  const sorted = [...ALL_ALERTS]
+    .filter(a => alertFilter === 'all' || a.sev === alertFilter)
+    .sort((a,b) => {{
+      const sev = {{critical:0, warning:1, info:2, success:3}};
+      const sa = sev[a.sev] ?? 4, sb = sev[b.sev] ?? 4;
+      if (sa !== sb) return sa - sb;
+      return a.t - b.t;
+    }});
+
+  sorted.forEach((a, idx) => {{
+    const card = document.createElement('div');
+    card.className = 'alert-clip-card sev-' + (a.sev || 'info');
+    const clipStart = Math.max(0, a.t - CLIP_DURATION_S/2);
+    const clipEnd   = a.t + CLIP_DURATION_S/2;
+    const vidId = 'clip-' + idx;
+
+    card.innerHTML = `
+      <video class="alert-clip-video" id="${{vidId}}"
+             src="../inputs/shovel_left.mp4#t=${{clipStart.toFixed(2)}},${{clipEnd.toFixed(2)}}"
+             muted playsinline preload="metadata"
+             onloadedmetadata="this.currentTime=${{clipStart.toFixed(2)}}"
+             ontimeupdate="if(this.currentTime>=${{clipEnd.toFixed(2)}}){{this.currentTime=${{clipStart.toFixed(2)}};}}"
+             loop></video>
+      <div class="alert-clip-body">
+        <div class="alert-clip-head">
+          <span class="alert-clip-type" style="color:var(--${{a.sev==='critical'?'red':a.sev==='warning'?'yellow':a.sev==='success'?'green':'blue'}})">
+            ${{a.type}}
+          </span>
+          <span class="alert-clip-time">t=${{a.t.toFixed(1)}}s · #${{a.cid||'—'}}</span>
+        </div>
+        <div class="alert-clip-msg">${{a.msg}}${{a.val!=null?` <b style="color:var(--yellow)">[${{a.val}} ${{a.unit||''}}]</b>`:''}}</div>
+      </div>
+      <div class="alert-clip-ctrl">
+        <button onclick="playClip('${{vidId}}', ${{clipStart}}, ${{clipEnd}})">▶ Reproducir</button>
+        <button onclick="seekToAlert(${{a.t}})">🎯 Ir a Live</button>
+        <button onclick="document.getElementById('${{vidId}}').playbackRate=0.5">🐢 0.5x</button>
+      </div>
+    `;
+    feed.appendChild(card);
   }});
+
+  if (sorted.length === 0) {{
+    feed.innerHTML = '<p style="color:var(--muted);padding:20px;text-align:center">Sin alertas para el filtro seleccionado.</p>';
+  }}
+
   // Update sidebar badge
   const crit = ALL_ALERTS.filter(a => a.sev === 'critical').length;
   const badge = document.getElementById('side-alert-count');
-  if (badge) badge.textContent = crit > 0 ? crit : ALL_ALERTS.length;
-  if (badge && crit === 0) badge.style.background = '{C['info']}';
+  if (badge) {{
+    badge.textContent = crit > 0 ? crit : ALL_ALERTS.length;
+    badge.style.background = crit > 0 ? 'var(--red)' : 'var(--info)';
+  }}
 }}
+
+function playClip(vidId, start, end) {{
+  const v = document.getElementById(vidId);
+  if (!v) return;
+  v.currentTime = start;
+  v.play().catch(e => console.warn('clip play:', e));
+}}
+
+function seekToAlert(ts) {{
+  switchView('live');
+  // Pequeno delay para que el video este visible
+  setTimeout(() => {{
+    const vL = document.getElementById('vid-left');
+    const vR = document.getElementById('vid-right');
+    if (vL) vL.currentTime = ts;
+    if (vR) vR.currentTime = ts;
+    // Actualizar progress bar (timeline)
+    const idx = Math.round(ts * 2); // step_s = 0.5
+    curIdx = Math.min(idx, TL.length - 1);
+    update(curIdx);
+  }}, 250);
+}}
+
+// ═══════════════════════════════════════════════════════════════
+// LIGHT / DARK THEME TOGGLE
+// ═══════════════════════════════════════════════════════════════
+function toggleTheme() {{
+  const root = document.documentElement;
+  const cur = root.getAttribute('data-theme') || 'dark';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  root.setAttribute('data-theme', next);
+  const btn = document.getElementById('theme-toggle');
+  if (btn) btn.textContent = next === 'dark' ? '🌙' : '☀️';
+  try {{ localStorage.setItem('dig-theme', next); }} catch(e) {{}}
+  // Relayoutear Plotly para que tome nuevos colores (si aplica)
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+}}
+// Restaurar tema guardado
+try {{
+  const saved = localStorage.getItem('dig-theme');
+  if (saved) {{
+    document.documentElement.setAttribute('data-theme', saved);
+    setTimeout(() => {{
+      const btn = document.getElementById('theme-toggle');
+      if (btn) btn.textContent = saved === 'dark' ? '🌙' : '☀️';
+    }}, 50);
+  }}
+}} catch(e) {{}}
 
 // ═══════════════════════════════════════════════════════════════
 // EXPORT PDF
@@ -1191,172 +1378,330 @@ async function exportNodeToPDF(node, filename, title) {{
 }}
 
 // ═══════════════════════════════════════════════════════════════
-// SIMULADOR DE COLOCACION (canvas)
+// SIMULADOR 3D — Three.js
 // ═══════════════════════════════════════════════════════════════
-let simCurrentScenario = 'offset';
-function simScenario(name) {{
-  simCurrentScenario = name;
-  document.querySelectorAll('.sim-controls button').forEach(b => b.classList.remove('active'));
-  event.currentTarget.classList.add('active');
-  renderSimulators();
+const sim3dState = {{ ok: null, bad: null, currentScenario: 'offset' }};
+
+function initSim3D(containerId, mode) {{
+  const container = document.getElementById(containerId);
+  if (!container || typeof THREE === 'undefined') return null;
+
+  const W = container.clientWidth || 600;
+  const H = container.clientHeight || 360;
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0d1117);
+  scene.fog = new THREE.Fog(0x0d1117, 40, 120);
+
+  const camera = new THREE.PerspectiveCamera(55, W/H, 0.1, 500);
+  camera.position.set(22, 18, 28);
+  camera.lookAt(0, 2, 0);
+
+  const renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: false }});
+  renderer.setSize(W, H);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  container.innerHTML = '';
+  container.appendChild(renderer.domElement);
+
+  // Luces
+  const amb = new THREE.AmbientLight(0xffffff, 0.55);
+  scene.add(amb);
+  const sun = new THREE.DirectionalLight(0xffefc8, 0.9);
+  sun.position.set(15, 25, 10);
+  scene.add(sun);
+  const back = new THREE.PointLight(0x4a9eff, 0.4, 80);
+  back.position.set(-20, 10, -10);
+  scene.add(back);
+
+  // Piso (terreno minero)
+  const floorMat = new THREE.MeshStandardMaterial({{ color: 0x3a2a1a, roughness: 0.95 }});
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(80, 80, 20, 20), floorMat);
+  floor.rotation.x = -Math.PI/2;
+  floor.position.y = -0.01;
+  scene.add(floor);
+  // Grid overlay
+  const grid = new THREE.GridHelper(80, 40, 0x555555, 0x30363d);
+  grid.position.y = 0.02;
+  scene.add(grid);
+
+  // Zona optima (cilindro verde semi-transparente)
+  const zoneOpt = new THREE.Mesh(
+    new THREE.CylinderGeometry(4, 4, 0.1, 32),
+    new THREE.MeshBasicMaterial({{ color: 0x3fb950, transparent: true, opacity: 0.3 }})
+  );
+  zoneOpt.position.set(0, 0.05, 0);
+  scene.add(zoneOpt);
+  // Ring verde
+  const ringOpt = new THREE.Mesh(
+    new THREE.RingGeometry(3.9, 4.1, 48),
+    new THREE.MeshBasicMaterial({{ color: 0x3fb950, side: THREE.DoubleSide }})
+  );
+  ringOpt.rotation.x = -Math.PI/2;
+  ringOpt.position.y = 0.06;
+  scene.add(ringOpt);
+  // Zona aceptable (ring amarillo)
+  const ringOk = new THREE.Mesh(
+    new THREE.RingGeometry(6.5, 6.7, 48),
+    new THREE.MeshBasicMaterial({{ color: 0xffd700, side: THREE.DoubleSide }})
+  );
+  ringOk.rotation.x = -Math.PI/2;
+  ringOk.position.y = 0.06;
+  scene.add(ringOk);
+
+  // Pala (simplificada)
+  const palaGroup = buildShovel();
+  palaGroup.position.set(14, 0, 0);
+  palaGroup.rotation.y = Math.PI;
+  scene.add(palaGroup);
+
+  // Camion
+  const truckGroup = buildTruck();
+  scene.add(truckGroup);
+
+  // Linea de swing pala-camion
+  const lineMat = new THREE.LineDashedMaterial({{ color: 0x4a9eff, dashSize: 0.6, gapSize: 0.4 }});
+  const lineGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(14, 5, 0), new THREE.Vector3(0, 5, 0)
+  ]);
+  const swingLine = new THREE.Line(lineGeom, lineMat);
+  swingLine.computeLineDistances();
+  scene.add(swingLine);
+
+  // Label HUD (texto sprite)
+  function makeLabel(text, color = '#3fb950', size = 256) {{
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'rgba(22,27,34,0.85)';
+    ctx.fillRect(0, 0, size, 64);
+    ctx.fillStyle = color;
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText(text, 10, 40);
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({{ map: tex, transparent: true }});
+    const spr = new THREE.Sprite(mat);
+    spr.scale.set(8, 2, 1);
+    return spr;
+  }}
+  const label = makeLabel('✓ Colocación Óptima', '#3fb950');
+  label.position.set(0, 8, 0);
+  scene.add(label);
+
+  // Controles de mouse (orbit minimalista)
+  let isDragging = false;
+  let prevX = 0, prevY = 0;
+  let angleH = 0, angleV = 0.35;
+  let dist = 36;
+
+  function updateCamera() {{
+    const cx = dist * Math.cos(angleV) * Math.sin(angleH);
+    const cy = dist * Math.sin(angleV);
+    const cz = dist * Math.cos(angleV) * Math.cos(angleH);
+    camera.position.set(cx, cy + 4, cz);
+    camera.lookAt(0, 2, 0);
+  }}
+  updateCamera();
+
+  renderer.domElement.addEventListener('mousedown', e => {{
+    isDragging = true; prevX = e.clientX; prevY = e.clientY;
+  }});
+  window.addEventListener('mouseup', () => isDragging = false);
+  renderer.domElement.addEventListener('mousemove', e => {{
+    if (!isDragging) return;
+    angleH -= (e.clientX - prevX) * 0.008;
+    angleV = Math.max(0.05, Math.min(1.2, angleV + (e.clientY - prevY) * 0.006));
+    prevX = e.clientX; prevY = e.clientY;
+    updateCamera();
+  }});
+  renderer.domElement.addEventListener('wheel', e => {{
+    e.preventDefault();
+    dist = Math.max(12, Math.min(80, dist + e.deltaY * 0.04));
+    updateCamera();
+  }}, {{ passive: false }});
+
+  // Animation loop
+  function animate() {{
+    requestAnimationFrame(animate);
+    renderer.render(scene, camera);
+  }}
+  animate();
+
+  return {{ scene, camera, renderer, truckGroup, swingLine, label, updateCamera }};
+}}
+
+function buildShovel() {{
+  const g = new THREE.Group();
+  // Tracks
+  const trackMat = new THREE.MeshStandardMaterial({{ color: 0x111111 }});
+  const tL = new THREE.Mesh(new THREE.BoxGeometry(6, 1, 1.2), trackMat);
+  tL.position.set(0, 0.5, 1.8); g.add(tL);
+  const tR = new THREE.Mesh(new THREE.BoxGeometry(6, 1, 1.2), trackMat);
+  tR.position.set(0, 0.5, -1.8); g.add(tR);
+  // Cuerpo
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(4.5, 3, 3.5),
+    new THREE.MeshStandardMaterial({{ color: 0x555555, roughness: 0.6 }})
+  );
+  body.position.set(0, 2.5, 0); g.add(body);
+  // Cabina
+  const cab = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 1.5, 1.8),
+    new THREE.MeshStandardMaterial({{ color: 0xff8c00, roughness: 0.5 }})
+  );
+  cab.position.set(-1.5, 4.3, 1.2); g.add(cab);
+  // Brazo (boom)
+  const boom = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.8, 8),
+    new THREE.MeshStandardMaterial({{ color: 0xff8c00 }})
+  );
+  boom.rotation.x = -0.4;
+  boom.position.set(1, 4.5, -2); g.add(boom);
+  // Stick + balde
+  const stick = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.6, 5),
+    new THREE.MeshStandardMaterial({{ color: 0xff8c00 }})
+  );
+  stick.rotation.x = 0.2;
+  stick.position.set(1, 2.2, -5); g.add(stick);
+  const bucket = new THREE.Mesh(
+    new THREE.BoxGeometry(2.5, 2, 2),
+    new THREE.MeshStandardMaterial({{ color: 0xff8c00, roughness: 0.3 }})
+  );
+  bucket.position.set(1, 1.2, -7); g.add(bucket);
+  return g;
+}}
+
+function buildTruck(color = 0x4a9eff) {{
+  const g = new THREE.Group();
+  // Chasis
+  const chMat = new THREE.MeshStandardMaterial({{ color: color, roughness: 0.5 }});
+  const chasis = new THREE.Mesh(new THREE.BoxGeometry(8, 1.5, 4), chMat);
+  chasis.position.set(0, 1.5, 0); g.add(chasis);
+  // Tolva
+  const tolvaShape = new THREE.Shape();
+  tolvaShape.moveTo(-3.2, 0); tolvaShape.lineTo(3.2, 0);
+  tolvaShape.lineTo(3.8, 2.5); tolvaShape.lineTo(-3.8, 2.5);
+  tolvaShape.lineTo(-3.2, 0);
+  const tolvaGeom = new THREE.ExtrudeGeometry(tolvaShape, {{ depth: 3.5, bevelEnabled: false }});
+  const tolva = new THREE.Mesh(tolvaGeom, new THREE.MeshStandardMaterial({{ color: color, roughness: 0.4 }}));
+  tolva.position.set(0, 2.4, -1.75);
+  g.add(tolva);
+  // ID amarillo en el frente del tanque (plano)
+  const idCanvas = document.createElement('canvas');
+  idCanvas.width = 256; idCanvas.height = 128;
+  const idCtx = idCanvas.getContext('2d');
+  idCtx.fillStyle = '#ffd700'; idCtx.fillRect(0, 0, 256, 128);
+  idCtx.fillStyle = '#000'; idCtx.font = 'bold 90px sans-serif';
+  idCtx.textAlign = 'center'; idCtx.fillText('31', 128, 95);
+  const idTex = new THREE.CanvasTexture(idCanvas);
+  const idPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.5, 1.5),
+    new THREE.MeshBasicMaterial({{ map: idTex }})
+  );
+  idPlane.position.set(3.85, 3.5, 0); idPlane.rotation.y = Math.PI/2;
+  g.add(idPlane);
+  // Display rojo balanza abajo (plano pequeno)
+  const dispCanvas = document.createElement('canvas');
+  dispCanvas.width = 128; dispCanvas.height = 48;
+  const dCtx = dispCanvas.getContext('2d');
+  dCtx.fillStyle = '#000'; dCtx.fillRect(0, 0, 128, 48);
+  dCtx.fillStyle = '#ff0033'; dCtx.font = 'bold 36px monospace';
+  dCtx.textAlign = 'center'; dCtx.fillText('216', 64, 38);
+  const dispTex = new THREE.CanvasTexture(dispCanvas);
+  const disp = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.2, 0.5),
+    new THREE.MeshBasicMaterial({{ map: dispTex }})
+  );
+  disp.position.set(4.05, 1.7, 0); disp.rotation.y = Math.PI/2;
+  g.add(disp);
+  // Cabina (frente)
+  const cab = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 1.3, 2),
+    new THREE.MeshStandardMaterial({{ color: 0x222222 }})
+  );
+  cab.position.set(3, 2.9, 0); g.add(cab);
+  // Llantas
+  const wMat = new THREE.MeshStandardMaterial({{ color: 0x111111 }});
+  [[-3, -1.8], [-3, 1.8], [-1, -1.8], [-1, 1.8], [3, -1.8], [3, 1.8]].forEach(p => {{
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.8, 16), wMat);
+    w.rotation.z = Math.PI/2;
+    w.position.set(p[0], 0.9, p[1]);
+    g.add(w);
+  }});
+  return g;
 }}
 
 function renderSimulators() {{
-  const okC = document.getElementById('sim-ok');
-  const badC = document.getElementById('sim-bad');
-  if (okC) drawSimulation(okC, 'ok');
-  if (badC) drawSimulation(badC, simCurrentScenario);
+  if (!sim3dState.ok) {{
+    sim3dState.ok = initSim3D('sim3d-ok', 'ok');
+    if (sim3dState.ok) {{
+      sim3dState.ok.truckGroup.position.set(0, 0, 0);
+      sim3dState.ok.truckGroup.rotation.y = 0;
+    }}
+  }}
+  if (!sim3dState.bad) {{
+    sim3dState.bad = initSim3D('sim3d-bad', 'bad');
+  }}
+  simScenario3D(sim3dState.currentScenario, null);
 }}
 
-function drawSimulation(canvas, mode) {{
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  ctx.fillStyle = '#0d1117';
-  ctx.fillRect(0, 0, W, H);
-
-  // Grid de piso minero
-  ctx.strokeStyle = '#30363d';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 10; i++) {{
-    ctx.beginPath();
-    ctx.moveTo((i/10)*W, H*0.55);
-    ctx.lineTo((i/10)*W, H);
-    ctx.stroke();
+function simScenario3D(name, btn) {{
+  sim3dState.currentScenario = name;
+  if (btn) {{
+    const siblings = btn.parentElement.querySelectorAll('button');
+    siblings.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
   }}
 
-  // Horizonte
-  ctx.fillStyle = '#1c2128';
-  ctx.fillRect(0, 0, W, H*0.55);
-  ctx.fillStyle = '#2a1810';
-  ctx.fillRect(0, H*0.55, W, H*0.45);
+  const bad = sim3dState.bad;
+  if (!bad) return;
+  const tr = bad.truckGroup;
 
-  // Pala (lado derecho)
-  const palaX = W*0.75, palaY = H*0.45;
-  drawShovel(ctx, palaX, palaY, H*0.35);
+  // Posiciones y labels por escenario
+  const scenarios = {{
+    offset: {{ pos: [0, 0, 8],  rot: 0,    label: '✗ Offset lateral +8m · Riesgo de derrame',      color: '#f85149' }},
+    far:    {{ pos: [-12, 0, 0], rot: 0,    label: '✗ Muy lejos (>20m) · Swing ineficiente',       color: '#f85149' }},
+    close:  {{ pos: [9, 0, 0],   rot: 0,    label: '✗ Muy cerca · Riesgo de contacto con balde',    color: '#f85149' }},
+    angle:  {{ pos: [0, 0, 0],   rot: 0.7,  label: '✗ Mal ángulo (40°) · Dump descentrado',        color: '#f85149' }},
+  }};
+  const s = scenarios[name] || scenarios.offset;
+  tr.position.set(s.pos[0], s.pos[1], s.pos[2]);
+  tr.rotation.y = s.rot;
 
-  // Zonas de colocacion (vista cenital simulada)
-  const zoneY = H*0.72;
-  // Zona optima (verde) centrada
-  const optX = W*0.35, optR = W*0.08;
-  ctx.fillStyle = 'rgba(63,185,80,.25)';
-  ctx.strokeStyle = '{C['green']}';
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(optX, zoneY, optR, 0, Math.PI*2); ctx.fill(); ctx.stroke();
-  // Zona aceptable (amarilla)
-  ctx.strokeStyle = '{C['yellow']}';
-  ctx.setLineDash([4,4]);
-  ctx.beginPath(); ctx.arc(optX, zoneY, optR*1.8, 0, Math.PI*2); ctx.stroke();
-  ctx.setLineDash([]);
+  // Actualizar linea de swing
+  const lineGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(14, 5, 0),
+    new THREE.Vector3(s.pos[0], 5, s.pos[2]),
+  ]);
+  bad.swingLine.geometry.dispose();
+  bad.swingLine.geometry = lineGeom;
+  bad.swingLine.computeLineDistances();
+  bad.swingLine.material.color.setHex(0xf85149);
 
-  // Camion (posicion segun mode)
-  let truckX = optX, truckY = zoneY, truckAngle = 0, label = '';
-  if (mode === 'ok') {{
-    truckX = optX; truckY = zoneY; truckAngle = 0;
-    label = '✓ Centrado en zona optima';
-  }} else if (mode === 'offset') {{
-    truckX = optX + optR*2.5; truckY = zoneY;
-    label = '✗ Offset lateral +4m · Riesgo de derrame';
-  }} else if (mode === 'far') {{
-    truckX = optX - optR*3; truckY = zoneY - 20;
-    label = '✗ Muy lejos (>15m) · Swing ineficiente';
-  }} else if (mode === 'close') {{
-    truckX = optX + optR*0.5; truckY = zoneY + 25;
-    label = '✗ Muy cerca · Riesgo de contacto con balde';
-  }} else if (mode === 'angle') {{
-    truckX = optX; truckY = zoneY; truckAngle = 0.4;
-    label = '✗ Mal angulo (23°) · Dump descentrado';
-  }}
-  drawTruck(ctx, truckX, truckY, H*0.18, truckAngle, mode === 'ok');
-
-  // Linea de swing pala-camion
-  ctx.strokeStyle = mode === 'ok' ? '{C['green']}' : '{C['red']}';
-  ctx.lineWidth = 2;
-  ctx.setLineDash([6,4]);
-  ctx.beginPath();
-  ctx.moveTo(palaX - H*0.18, palaY);
-  ctx.lineTo(truckX, truckY - 20);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Label arriba
-  ctx.fillStyle = mode === 'ok' ? '{C['green']}' : '{C['red']}';
-  ctx.font = 'bold 14px system-ui, sans-serif';
-  ctx.fillText(label, 10, 22);
-
-  // Distancia calculada
-  const dx = truckX - palaX, dy = truckY - palaY;
-  const dist = Math.sqrt(dx*dx + dy*dy) / (W*0.05);  // simulated meters
-  ctx.fillStyle = '{C['muted']}';
-  ctx.font = '11px monospace';
-  ctx.fillText('Distancia estimada: ' + dist.toFixed(1) + 'm', 10, 40);
-  ctx.fillText('Offset: ' + ((truckX-optX)/(W*0.05)).toFixed(1) + 'm', 10, 54);
-  ctx.fillText('Angulo: ' + (truckAngle*180/Math.PI).toFixed(0) + '°', 10, 68);
-}}
-
-function drawShovel(ctx, x, y, size) {{
-  // Cuerpo pala
-  ctx.fillStyle = '#4a5568';
-  ctx.fillRect(x - size*0.2, y - size*0.6, size*0.4, size*0.6);
-  // Brazo
-  ctx.strokeStyle = '{C['orange']}';
-  ctx.lineWidth = 6;
-  ctx.beginPath();
-  ctx.moveTo(x, y - size*0.4);
-  ctx.lineTo(x - size*0.8, y);
-  ctx.stroke();
-  // Balde
-  ctx.fillStyle = '{C['orange']}';
-  ctx.beginPath();
-  ctx.moveTo(x - size*0.8, y - size*0.1);
-  ctx.lineTo(x - size*0.95, y + size*0.05);
-  ctx.lineTo(x - size*0.7, y + size*0.15);
-  ctx.lineTo(x - size*0.55, y);
-  ctx.closePath();
-  ctx.fill();
-  // Tracks
-  ctx.fillStyle = '#1a1a1a';
-  ctx.fillRect(x - size*0.3, y, size*0.6, size*0.1);
   // Label
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 10px sans-serif';
-  ctx.fillText('EX-5600', x - size*0.15, y - size*0.7);
-}}
+  if (bad.label) {{
+    const canvas = document.createElement('canvas');
+    canvas.width = 512; canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'rgba(22,27,34,0.9)';
+    ctx.fillRect(0, 0, 512, 64);
+    ctx.fillStyle = s.color;
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText(s.label, 10, 40);
+    bad.label.material.map.image = canvas;
+    bad.label.material.map.needsUpdate = true;
+    bad.label.scale.set(16, 2, 1);
+  }}
 
-function drawTruck(ctx, x, y, size, angle, isOk) {{
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(angle);
-  // Chasis
-  ctx.fillStyle = isOk ? '#3a8ee0' : '#c67e3e';
-  ctx.fillRect(-size*1.2, -size*0.15, size*2.4, size*0.4);
-  // Tolva
-  ctx.fillStyle = isOk ? '#4a9eff' : '#e0962e';
-  ctx.beginPath();
-  ctx.moveTo(-size*0.9, -size*0.15);
-  ctx.lineTo(-size*1.0, -size*0.6);
-  ctx.lineTo(size*1.0, -size*0.6);
-  ctx.lineTo(size*0.9, -size*0.15);
-  ctx.closePath();
-  ctx.fill();
-  // Cabina (frontal)
-  ctx.fillStyle = '#2a2a2a';
-  ctx.fillRect(size*0.7, -size*0.45, size*0.3, size*0.3);
-  // Llantas
-  ctx.fillStyle = '#000';
-  [-size*0.9, -size*0.3, size*0.3, size*0.9].forEach(wx => {{
-    ctx.beginPath(); ctx.arc(wx, size*0.28, size*0.15, 0, Math.PI*2); ctx.fill();
-  }});
-  // Display peso (frontal)
-  ctx.fillStyle = '{C['yellow']}';
-  ctx.fillRect(size*0.72, -size*0.4, size*0.2, size*0.08);
-  ctx.fillStyle = '#000';
-  ctx.font = 'bold 8px monospace';
-  ctx.fillText('218t', size*0.73, -size*0.34);
-  // ID
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 10px sans-serif';
-  ctx.fillText(isOk?'T-042':'T-???', -size*0.3, size*0.05);
-  ctx.restore();
+  // Calcular metricas displayadas
+  const dx = 14 - s.pos[0], dz = s.pos[2];
+  const distance = Math.sqrt(dx*dx + dz*dz);
+  const offset = Math.abs(s.pos[2]);
+  const angleDeg = (s.rot * 180 / Math.PI).toFixed(0);
+  const metricsEl = document.getElementById('sim3d-metrics');
+  if (metricsEl) {{
+    metricsEl.textContent =
+      `Distancia: ${{distance.toFixed(1)}} m · Offset: ${{offset.toFixed(1)}} m · Ángulo: ${{angleDeg}}°`;
+  }}
 }}
 
 // ═══════════════════════════════════════════════════════════════
@@ -1775,13 +2120,234 @@ def _help_content() -> str:
       </div>
     </div>
     <div class="sec">
-      <div class="sec-title">Como interpretar el simulador</div>
+      <div class="sec-title">Formulas maestras (MathJax)</div>
+      <div class="glossary">
+        <h4>Indice de Productividad Operativa</h4>
+        <p style="color:{C['muted']};margin:8px 0">Formula maestra que ancla todo el dashboard:</p>
+        <div style="background:{C['panel2']};padding:14px;border-radius:6px;text-align:center;overflow-x:auto">
+          $$ IPO = \\frac{{V_{{nom}} \\cdot \\eta_R \\cdot \\eta_M \\cdot C_T}}{{T_{{ciclo}}}} \\cdot (1 - \\alpha_W) \\cdot (1 - \\alpha_{{DE}}) $$
+        </div>
+        <dl style="margin-top:12px">
+          <dt>$V_{{nom}}$</dt><dd>Volumen nominal del balde = 27 m³ (EX-5600).</dd>
+          <dt>$\\eta_R = V_{{real}}/V_{{nom}}$</dt><dd>Fill factor de recoleccion (0-1).</dd>
+          <dt>$\\eta_M$</dt><dd>Eficiencia de maniobra: tiempo swing productivo / tiempo ciclo.</dd>
+          <dt>$C_T = (T_{{turno}} \\cdot DA) / T_{{ciclo}}$</dt><dd>Ciclos por turno alcanzables.</dd>
+          <dt>$DA$</dt><dd>Disponibilidad de equipo en el turno (0-1). Ligada al nodo Desgaste.</dd>
+          <dt>$\\alpha_W = V_{{desperdiciado}}/V_{{cargado}}$</dt><dd>Factor de desperdicios (leak 1).</dd>
+          <dt>$\\alpha_{{DE}} = T_{{inactivo\\_mant}}/T_{{turno}}$</dt><dd>Factor de desgaste de equipos (leak 2).</dd>
+        </dl>
+      </div>
+      <div class="glossary" style="margin-top:10px">
+        <h4>Componentes del tiempo de ciclo</h4>
+        <div style="background:{C['panel2']};padding:14px;border-radius:6px;text-align:center">
+          $$ T_{{ciclo}} = T_{{pos\\_C}} + T_{{carga}} + T_{{viaje\\_c}} + T_{{desc}} + T_{{pos\\_D}} + T_{{viaje\\_v}} $$
+        </div>
+        <dl style="margin-top:10px">
+          <dt>$T_{{pos\\_C}}$</dt><dd>Posicionamiento de la pala antes de cargar.</dd>
+          <dt>$T_{{carga}}$</dt><dd>Tiempo efectivo de excavacion (DIG).</dd>
+          <dt>$T_{{viaje\\_c}}$</dt><dd>Swing con balde cargado hacia el camion.</dd>
+          <dt>$T_{{desc}}$</dt><dd>Tiempo de soltar el material sobre la tolva.</dd>
+          <dt>$T_{{pos\\_D}}$</dt><dd>Reposicion del balde en la tolva (centrar descarga).</dd>
+          <dt>$T_{{viaje\\_v}}$</dt><dd>Retorno del balde sin carga.</dd>
+        </dl>
+      </div>
+      <div class="glossary" style="margin-top:10px">
+        <h4>Rangos de interpretacion del IPO</h4>
+        <div class="ipo-tbands">
+          <div class="ipo-tband" style="background:rgba(63,185,80,.15);border-color:{C['green']}">
+            <b style="color:{C['green']}">IPO &gt; 0.85</b>
+            Operacion optima
+          </div>
+          <div class="ipo-tband" style="background:rgba(74,158,255,.15);border-color:{C['blue']}">
+            <b style="color:{C['blue']}">0.65 - 0.85</b>
+            Normal, mejoras puntuales
+          </div>
+          <div class="ipo-tband" style="background:rgba(255,215,0,.15);border-color:{C['yellow']}">
+            <b style="color:{C['yellow']}">0.45 - 0.65</b>
+            Ineficiencias criticas
+          </div>
+          <div class="ipo-tband" style="background:rgba(248,81,73,.15);border-color:{C['red']}">
+            <b style="color:{C['red']}">IPO &lt; 0.45</b>
+            Operacion comprometida
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Deteccion visual (YOLO26 + color + OCR)</div>
+      <div class="glossary">
+        <dl>
+          <dt style="color:{C['blue']}">YOLO26s</dt>
+          <dd>Red de deteccion de objetos (Ultralytics 2026) preentrenada en COCO. Usa clase <code>truck</code> para localizar el camion en el frame.</dd>
+          <dt style="color:{C['yellow']}">ROI Amarillo (ID)</dt>
+          <dd>Dentro del bbox del camion, filtro HSV amarillo aisla el numero pintado en el tanque. OCR dirigido con EasyOCR sobre esta mascara.</dd>
+          <dt style="color:{C['red']}">ROI Rojo (Balanza)</dt>
+          <dd>Filtro HSV rojo aisla el display LED de peso en la cabina. Preprocesamiento con Otsu + dilate para mejorar lectura de 7-segmentos.</dd>
+          <dt style="color:{C['green']}">Position Score</dt>
+          <dd>0-100: que tan bien posicionado esta el camion respecto a la zona ideal (centro del frame). &gt;70 = optimo; &lt;40 = reubicar.</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Como interpretar el simulador 3D</div>
       <div class="glossary">
         <p style="color:{C['muted']}">
-          El simulador grafico (vista <b>Simulador</b>) muestra la posicion ideal del camion frente a la pala
-          y comparaciones con errores tipicos: offset lateral, distancia incorrecta, angulo desviado.
-          En operacion real esto se calibra con la primera carga exitosa de cada turno.
+          El simulador 3D (vista <b>Simulador</b>) renderiza una escena interactiva con Three.js mostrando la pala EX-5600
+          y el camion minero. Podes <b>arrastrar con el mouse para rotar</b> y <b>scroll para zoom</b>.
+          Los escenarios de error (offset, muy lejos, muy cerca, mal angulo) muestran el impacto visual
+          de cada tipo de colocacion incorrecta. En operacion real esto se calibra con la primera carga exitosa del turno.
+        </p>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Mini-clips de video por alerta</div>
+      <div class="glossary">
+        <p style="color:{C['muted']}">
+          La vista <b>Alertas</b> genera un mini-clip de <b>3 segundos</b> por cada evento detectado,
+          centrado en el timestamp de la alerta (1.5s antes + 1.5s despues). Esto permite al operador
+          revisar visualmente el momento exacto del evento sin buscar manualmente en el video completo.
+          Los clips se reproducen en loop y comparten la fuente de video con la vista Live (sin duplicar archivos).
         </p>
       </div>
     </div>
     """
+
+
+def _ipo_view(ipo) -> str:
+    """Genera la vista IPO con formula maestra, componentes y desglose."""
+    if ipo is None:
+        return ('<div class="panel" style="padding:20px">'
+                '<p style="color:#8b949e">IPO no calculado.</p></div>')
+
+    band_colors = {
+        'OPTIMA':       C['green'],
+        'NORMAL':       C['blue'],
+        'CRITICA':      C['yellow'],
+        'COMPROMETIDA': C['red'],
+        'N/A':          C['muted'],
+    }
+    band_color = band_colors.get(ipo.band, C['muted'])
+    ipo_pct = int(ipo.ipo * 100)
+
+    # Tarjetas de componentes
+    def card(sym, val, lbl):
+        return (f'<div class="ipo-comp-card">'
+                f'<div class="ipo-comp-sym">{sym}</div>'
+                f'<div class="ipo-comp-val">{val}</div>'
+                f'<div class="ipo-comp-lbl">{lbl}</div>'
+                f'</div>')
+
+    comps = ''.join([
+        card('V_nom', f'{ipo.v_nom:.0f} m³',      'Volumen nominal balde'),
+        card('η_R',   f'{ipo.eta_R:.3f}',         f'Fill factor ({ipo.eta_R*100:.1f}%)'),
+        card('η_M',   f'{ipo.eta_M:.3f}',         f'Eficiencia maniobra ({ipo.eta_M*100:.1f}%)'),
+        card('C_T',   f'{ipo.c_T:.1f}',           'Ciclos por turno'),
+        card('T_ciclo', f'{ipo.t_ciclo:.1f} s',   'Tiempo medio de ciclo'),
+        card('DA',    f'{ipo.DA:.3f}',            'Disponibilidad de equipo'),
+        card('α_W',   f'{ipo.alpha_W:.3f}',       f'Desperdicios ({ipo.alpha_W*100:.1f}%)'),
+        card('α_DE',  f'{ipo.alpha_DE:.3f}',      f'Desgaste equipos ({ipo.alpha_DE*100:.1f}%)'),
+    ])
+
+    # Desglose del tiempo de ciclo
+    t_parts = ''.join([
+        card('T_pos_C',   f'{ipo.t_pos_C:.1f} s',   'Pos. carga'),
+        card('T_carga',   f'{ipo.t_carga:.1f} s',   'Carga (DIG)'),
+        card('T_viaje_c', f'{ipo.t_viaje_c:.1f} s', 'Swing cargado'),
+        card('T_desc',    f'{ipo.t_desc:.1f} s',    'Descarga'),
+        card('T_pos_D',   f'{ipo.t_pos_D:.1f} s',   'Pos. descarga'),
+        card('T_viaje_v', f'{ipo.t_viaje_v:.1f} s', 'Swing vacio'),
+    ])
+
+    # Bandas de interpretacion
+    def band_cell(name, lo, hi, color, txt, active):
+        cls = 'ipo-tband active' if active else 'ipo-tband'
+        return (f'<div class="{cls}" style="background:rgba({_hex_to_rgb(color)},.15);border-color:{color}">'
+                f'<b style="color:{color}">{name}</b>'
+                f'<span style="color:{C["muted"]};font-size:.65rem;display:block">{lo:.2f} - {hi:.2f}</span>'
+                f'{txt}'
+                f'</div>')
+
+    bands = ''.join([
+        band_cell('OPTIMA',       0.85, 1.00, C['green'],  'Mantener estandares',         ipo.band=='OPTIMA'),
+        band_cell('NORMAL',       0.65, 0.85, C['blue'],   'Mejoras puntuales',           ipo.band=='NORMAL'),
+        band_cell('CRITICA',      0.45, 0.65, C['yellow'], 'Revisar η_M o α_DE',          ipo.band=='CRITICA'),
+        band_cell('COMPROMETIDA', 0.00, 0.45, C['red'],    'Intervencion inmediata',      ipo.band=='COMPROMETIDA'),
+    ])
+
+    notes_html = ''
+    if ipo.notes:
+        notes_html = ('<div class="bpmn-note" style="margin-top:10px">'
+                      '<b>Notas:</b> ' + '; '.join(ipo.notes) + '</div>')
+
+    return f"""
+    <div class="ipo-hero">
+      <div style="color:{C['muted']};font-size:.75rem;text-transform:uppercase;letter-spacing:.1em">
+        Indice de Productividad Operativa
+      </div>
+      <div class="ipo-big" style="color:{band_color}">{ipo.ipo:.3f}</div>
+      <div class="ipo-band" style="background:{band_color};color:#000">
+        {ipo.band}  ·  {ipo_pct}%
+      </div>
+      <div style="color:{C['muted']};font-size:.85rem;margin-top:10px">
+        {ipo.recommendation}
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Formula Maestra</div>
+      <div class="ipo-formula">
+        $$ IPO = \\frac{{V_{{nom}} \\cdot \\eta_R \\cdot \\eta_M \\cdot C_T}}{{T_{{ciclo}}}} \\cdot (1 - \\alpha_W) \\cdot (1 - \\alpha_{{DE}}) $$
+      </div>
+      <div class="ipo-formula" style="font-size:.85rem">
+        Con los valores actuales:
+        $$ IPO = \\frac{{{ipo.v_nom:.0f} \\cdot {ipo.eta_R:.3f} \\cdot {ipo.eta_M:.3f} \\cdot {ipo.c_T:.1f}}}{{{ipo.t_ciclo:.1f}}} \\cdot (1 - {ipo.alpha_W:.3f}) \\cdot (1 - {ipo.alpha_DE:.3f}) = {ipo.ipo:.3f} $$
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Componentes actuales</div>
+      <div class="ipo-components">{comps}</div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Desglose del tiempo de ciclo</div>
+      <div class="ipo-formula" style="font-size:.85rem">
+        $$ T_{{ciclo}} = T_{{pos\\_C}} + T_{{carga}} + T_{{viaje\\_c}} + T_{{desc}} + T_{{pos\\_D}} + T_{{viaje\\_v}} $$
+      </div>
+      <div class="ipo-components">{t_parts}</div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Interpretacion por bandas</div>
+      <div class="ipo-tbands">{bands}</div>
+      {notes_html}
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Volumen y factores de perdida</div>
+      <div class="glossary">
+        <dl>
+          <dt>V_ef (efectivo)</dt><dd>{ipo.v_ef:.1f} m³ por cucharada = {ipo.v_nom:.0f} × {ipo.eta_R:.3f}</dd>
+          <dt>V_cargado total</dt><dd>{ipo.v_cargado:.1f} m³ movidos en la ventana</dd>
+          <dt>V_desperdiciado</dt><dd>{ipo.v_desperdiciado:.1f} m³ perdidos (underfill + derrames)</dd>
+          <dt>T_mantenimiento</dt><dd>{ipo.t_mant:.1f} s inactivo por mantenimiento</dd>
+          <dt>T_turno</dt><dd>{ipo.t_turno:.0f} s (turno estandar 8h)</dd>
+        </dl>
+      </div>
+    </div>
+    """
+
+
+def _hex_to_rgb(hex_str: str) -> str:
+    """#ff8c00 -> '255,140,0' para usar en rgba(...)"""
+    s = hex_str.lstrip('#')
+    if len(s) == 3:
+        s = ''.join(c*2 for c in s)
+    try:
+        r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+        return f'{r},{g},{b}'
+    except Exception:
+        return '128,128,128'

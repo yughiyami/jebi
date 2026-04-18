@@ -11,6 +11,7 @@ from video_processor import process_video_events
 from metrics import (compute_efficiency_profiles, compute_truck_loads,
                      compute_transport_metrics, build_realtime_timeline,
                      compute_wear_score, extract_spill_events)
+from ipo_metrics import compute_ipo
 from reporter import generate_report
 
 INPUT_FILES = {
@@ -80,10 +81,14 @@ def run(inputs_dir, outputs_dir):
     transport        = compute_transport_metrics(truck_events, waits, df.attrs['duration_s'])
     wear_score       = compute_wear_score(alerts, df, cycles)
     spill_events     = extract_spill_events(alerts)
+    ipo              = compute_ipo(cycles, waits, alerts, transport, metrics)
     print(f'  Alertas generadas: {len(alerts)}')
     print(f'  Camiones trackados: {transport.n_trucks_served}')
     print(f'  Wear score total: {wear_score.get("total_score", 0):.1f}')
     print(f'  Spill events     : {len(spill_events)}')
+    print(f'  IPO              : {ipo.ipo:.3f} ({ipo.band})')
+    print(f'    η_R = {ipo.eta_R:.3f}  η_M = {ipo.eta_M:.3f}  DA = {ipo.DA:.3f}')
+    print(f'    α_W = {ipo.alpha_W:.3f}  α_DE = {ipo.alpha_DE:.3f}  C_T = {ipo.c_T:.1f}')
 
     # ── 5. Timeline real-time ─────────────────────────────────────────────────
     print('\n[5/6] Construyendo timeline real-time...')
@@ -139,6 +144,7 @@ def run(inputs_dir, outputs_dir):
         timeline=timeline,
         ocr_events=ocr_events, wear_score=wear_score,
         spill_events=spill_events, dust_index=dust_index,
+        ipo=ipo,
     )
 
     # OCR readings CSV
