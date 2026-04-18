@@ -41,14 +41,23 @@ FLOW_HEIGHT = 180
 DEFAULT_SAMPLE_INTERVAL_S = 1.0   # 1 sample/seg da buen balance
 
 # Thresholds de motion
-# CRÍTICO: son ADAPTIVOS al video porque cada escenario tiene su baseline.
-# El threshold real se calcula como percentil sobre el propio video.
-# Esto garantiza que funcione en cualquier dataset (brief: test dataset diferente).
-STATIC_PERCENTILE       = 25     # motion < percentil 25 del video → considerado static
-LOW_PERCENTILE          = 50     # motion < percentil 50 → low activity
-# Fallback si el percentil da valores degenerados
-MIN_STATIC_THRESHOLD    = 0.15   # mínimo absoluto
-MAX_STATIC_THRESHOLD    = 3.0    # máximo absoluto
+# Dos modos:
+#   1. CALIBRATED (default): thresholds ground-truth del proyecto jevi que
+#      se validaron contra los 2 períodos reales observados (2:40 y 4:53).
+#   2. ADAPTIVE (fallback): percentil del video si se pasa a otro escenario.
+CAM_THRESHOLD_GROUND_TRUTH = 1.3    # px/frame - calibrado contra video EX-5600
+STATIC_PERCENTILE          = 25     # fallback: motion < percentil 25 del video
+LOW_PERCENTILE             = 50
+MIN_STATIC_THRESHOLD       = 0.15
+MAX_STATIC_THRESHOLD       = 3.0
+
+# Thresholds IMU (ground-truth calibrados contra los 2 idle reales)
+IMU_ACC_THRESHOLD  = 3.0     # m/s² (acc_net sin gravedad)
+IMU_GYRO_THRESHOLD = 18.0    # deg/s (gyro_mag)
+
+# Ventana rodante para reducir falsos positivos
+SUSTAIN_WINDOW_S   = 2.0     # segundos
+REQUIRE_FRACTION   = 0.80    # 80% de muestras en la ventana deben cumplir criterio
 
 # Parámetros Farneback (tuned for mining shovel scenarios)
 FARNEBACK_PARAMS = dict(
@@ -286,6 +295,165 @@ def _empty_timeline(interval_s: float) -> MotionTimeline:
         idle_periods=[], total_static_s=0.0, total_motion_s=0.0,
         avg_motion_magnitude=0.0, max_motion_magnitude=0.0,
     )
+
+
+# ─── FUSIÓN IMU + MOTION (lógica jevi) ────────────────────────────────────────
+
+def _compute_imu_features_inline(df_imu, gravity_window: int = 150):
+    """Computa acc_net (sin gravedad) y gyro_mag. Modifica df in-place."""
+    import pandas as pd
+    from scipy.signal import medfilt
+
+    # Copy columns we need; compute gravity by rolling median
+    for axis in ('ax', 'ay', 'az'):
+        g_col = f'{axis}_g'
+        if g_col not in df_imu.columns:
+            df_imu[g_col] = df_imu[axis].rolling(
+                gravity_window, center=True, min_periods=1
+            ).median()
+
+    # acc_net: aceleración sin gravedad (magnitud residual)
+    acc_net = np.sqrt(
+        (df_imu['ax'] - df_imu['ax_g']) ** 2
+        + (df_imu['ay'] - df_imu['ay_g']) ** 2
+        + (df_imu['az'] - df_imu['az_g']) ** 2
+    )
+    # gyro_mag: magnitud de rotación total
+    gyro_mag = np.sqrt(df_imu['gx'] ** 2 + df_imu['gy'] ** 2 + df_imu['gz'] ** 2)
+
+    # Median filter para quitar spikes
+    try:
+        acc_net = medfilt(acc_net.values, kernel_size=21)
+        gyro_mag = medfilt(gyro_mag.values, kernel_size=21)
+    except Exception:
+        # Fallback sin scipy
+        acc_net = acc_net.values
+        gyro_mag = gyro_mag.values
+
+    df_imu['acc_net'] = acc_net
+    df_imu['gyro_mag'] = gyro_mag
+
+    # time_s: asegurarnos que existe
+    if 'time_s' not in df_imu.columns and 'timestamp_s' in df_imu.columns:
+        df_imu['time_s'] = df_imu['timestamp_s']
+
+    return df_imu
+
+
+def fuse_imu_motion(df_imu,
+                     motion_tl: MotionTimeline,
+                     acc_thr: float = IMU_ACC_THRESHOLD,
+                     gyro_thr: float = IMU_GYRO_THRESHOLD,
+                     cam_thr: float = None,
+                     sustain_s: float = SUSTAIN_WINDOW_S,
+                     require_frac: float = REQUIRE_FRACTION):
+    """
+    Fusión estricta IMU + Cámara al estilo jevi.
+
+    Regla: INACTIVO cuando TODOS los 3 criterios se cumplen:
+      - acc_net < acc_thr  (3.0 m/s²)
+      - gyro_mag < gyro_thr (18.0 deg/s)
+      - cam_motion < cam_thr (adaptivo desde motion_tl)
+
+    Ventana rodante: require_frac (80%) de las muestras en la ventana
+    sustain_s (2s) deben cumplir → reduce falsos positivos por vibraciones.
+
+    Args:
+        df_imu: DataFrame del IMU
+        motion_tl: MotionTimeline con samples de optical flow
+        cam_thr: threshold de motion. Si None, usa el adaptivo del motion_tl
+                 (percentil 25 × 1.3, igual al usado para is_static).
+
+    Returns:
+        df_imu con columnas agregadas 'acc_net', 'gyro_mag', 'cam_motion', 'label'
+    """
+    import pandas as pd
+
+    # 1) Features del IMU
+    df = _compute_imu_features_inline(df_imu.copy())
+
+    # 2) Resample del motion_tl al timestamp del IMU (interpolación lineal)
+    if motion_tl and motion_tl.samples:
+        cam_ts = np.array([s.timestamp_s for s in motion_tl.samples])
+        cam_mag = np.array([s.motion_magnitude for s in motion_tl.samples])
+        cam_motion = np.interp(df['time_s'].values, cam_ts, cam_mag,
+                                left=np.nan, right=np.nan)
+        # FIX: usar threshold adaptivo del video si no se especifica uno
+        if cam_thr is None:
+            # Mismo cálculo que compute_motion_timeline() usa para is_static
+            mags_nonzero = cam_mag[1:] if len(cam_mag) > 1 else cam_mag
+            p25 = float(np.percentile(mags_nonzero, STATIC_PERCENTILE))
+            cam_thr = p25 * 1.3
+            cam_thr = max(MIN_STATIC_THRESHOLD, min(MAX_STATIC_THRESHOLD, cam_thr))
+            print(f'  [fusion] Threshold cam adaptivo: {cam_thr:.3f} px/frame')
+    else:
+        cam_motion = np.full(len(df), np.nan)
+        if cam_thr is None:
+            cam_thr = CAM_THRESHOLD_GROUND_TRUTH
+
+    df['cam_motion'] = cam_motion
+
+    # 3) Criterios por muestra
+    imu_idle = (df['acc_net'] < acc_thr) & (df['gyro_mag'] < gyro_thr)
+    cam_avail = ~df['cam_motion'].isna()
+    cam_idle = df['cam_motion'].fillna(np.inf) < cam_thr
+    # Si cam no está disponible, confiamos solo en IMU
+    per_sample = imu_idle & (cam_idle | ~cam_avail)
+
+    # 4) Ventana rodante: fracción de muestras que pasan
+    if len(df) > 1:
+        duration = float(df['time_s'].iloc[-1] - df['time_s'].iloc[0]) + 1e-8
+        sr = len(df) / duration
+    else:
+        sr = 10.0
+    win = max(int(sustain_s * sr), 3)
+    frac = per_sample.rolling(win, center=True, min_periods=1).mean()
+
+    # 5) Etiquetar
+    df['label'] = 'ACTIVO'
+    df.loc[frac >= require_frac, 'label'] = 'INACTIVO'
+    return df
+
+
+def extract_idle_segments_from_fusion(df_fused, min_duration_s: float = 9.0):
+    """
+    Extrae segmentos INACTIVO contiguos del DataFrame fusionado.
+    Retorna list[{tiempo_inicio_s, tiempo_fin_s, duracion_s}].
+    """
+    segments = []
+    if len(df_fused) == 0 or 'label' not in df_fused.columns:
+        return segments
+
+    in_idle = False
+    start_t = None
+
+    for _, row in df_fused.iterrows():
+        if row['label'] == 'INACTIVO' and not in_idle:
+            in_idle = True
+            start_t = float(row['time_s'])
+        elif row['label'] != 'INACTIVO' and in_idle:
+            in_idle = False
+            t_end = float(row['time_s'])
+            dur = t_end - start_t
+            if dur >= min_duration_s:
+                segments.append({
+                    'tiempo_inicio_s': round(start_t, 3),
+                    'tiempo_fin_s':    round(t_end, 3),
+                    'duracion_s':      round(dur, 3),
+                })
+
+    # Run abierto al final
+    if in_idle:
+        last_t = float(df_fused['time_s'].iloc[-1])
+        dur = last_t - start_t
+        if dur >= min_duration_s:
+            segments.append({
+                'tiempo_inicio_s': round(start_t, 3),
+                'tiempo_fin_s':    round(last_t, 3),
+                'duracion_s':      round(dur, 3),
+            })
+
+    return segments
 
 
 # ─── CRUCE CON IMU ────────────────────────────────────────────────────────────

@@ -273,10 +273,22 @@ def compute_ipo(cycles, wait_events, alerts, transport, metrics,
     #   η_M  = TARGET_CYCLE_S (28s) / t_ciclo_real            (performance)
     # ──────────────────────────────────────────────────────────────────────────
 
-    # η_T (availability): cuánto del tiempo fue productivo
-    total_wait_s = sum(w.duration_s for w in wait_events)
+    # η_T (availability): cuánto del tiempo fue productivo.
+    # FIX: si tenemos validación visual (fusión IMU+Cámara), usamos el ocio
+    # REAL detectado por fusión estricta (9s min duration + ground-truth thr).
+    # El total_wait_s del IMU crudo está inflado por falsos positivos.
+    total_wait_s_raw = sum(w.duration_s for w in wait_events)
+    if visual_validation and visual_validation.get('total_inactivo_s', 0) > 0:
+        # Fuente de verdad: fusión dual-source
+        total_idle_s = visual_validation['total_inactivo_s']
+        notes.append(f'eta_T usa ocio fusionado (IMU+Camara): {total_idle_s:.1f}s '
+                      f'(IMU crudo: {total_wait_s_raw:.1f}s)')
+    else:
+        # Fallback: IMU crudo (inflado pero mejor que nada)
+        total_idle_s = total_wait_s_raw
+
     if metrics.total_duration_s > 0:
-        eta_T = (metrics.total_duration_s - total_wait_s) / metrics.total_duration_s
+        eta_T = (metrics.total_duration_s - total_idle_s) / metrics.total_duration_s
     else:
         eta_T = 0.0
     eta_T = float(np.clip(eta_T, 0.0, 1.0))

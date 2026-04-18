@@ -122,6 +122,7 @@ def _build(df_imu, cycles, wait_events, metrics, video_events,
     idle_html    = _idle_view(idle_index or {})
     insights_html = _insights_view(metrics, idle_index or {}, ipo, transport,
                                     visual_validation or {})
+    pausas_html  = _pausas_view(visual_validation or {})
 
     return f"""<!DOCTYPE html>
 <html lang="es" data-theme="dark">
@@ -568,6 +569,10 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   <div class="side-item" data-view="live" onclick="switchView('live')">
     <span class="side-icon">🎥</span><span>Video &amp; Live</span>
   </div>
+  <div class="side-item" data-view="pausas" onclick="switchView('pausas')">
+    <span class="side-icon">⏸</span><span>Pausas del Operador</span>
+    <span class="side-badge" id="side-pausas-count">0</span>
+  </div>
   <div class="side-item" data-view="cycles" onclick="switchView('cycles')">
     <span class="side-icon">🔄</span><span>Ciclos</span>
   </div>
@@ -869,6 +874,20 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   </div>
 </div><!-- /view-cycles -->
 
+<!-- ═══════════ VIEW: PAUSAS DEL OPERADOR ═══════════ -->
+<div class="view" id="view-pausas" data-view="pausas">
+  <div class="view-hdr">
+    <div>
+      <h2>Pausas del Operador</h2>
+      <div class="desc">Eventos detectados por fusión IMU + Optical Flow · Click en cualquier card para saltar al video</div>
+    </div>
+    <div class="view-actions">
+      <button class="btn btn-primary" onclick="exportCurrentView()">📄 Exportar PDF</button>
+    </div>
+  </div>
+  {pausas_html}
+</div><!-- /view-pausas -->
+
 <!-- ═══════════ VIEW: INSIGHTS & RECOMENDACIONES ═══════════ -->
 <div class="view" id="view-insights" data-view="insights">
   <div class="view-hdr">
@@ -995,6 +1014,10 @@ const MOTION_SERIES = {json.dumps(
 )};
 const MOTION_IDLE_PERIODS = {json.dumps(
     (visual_validation or {}).get('motion_timeline', {}).get('idle_periods', [])
+)};
+// Eventos clasificados (fusion jevi): pausas del operador
+const FUSION_EVENTS = {json.dumps(
+    (visual_validation or {}).get('fusion_events', [])
 )};
 const PRODUCTIVITY_TPH = {metrics.productivity_tph if metrics.productivity_tph > 0 else 400};
 
@@ -1540,6 +1563,19 @@ function seekToAlert(ts) {{
   }}, 250);
 }}
 
+// Alias genérico para seeking desde cualquier vista a un timestamp
+function seekToTime(ts) {{ seekToAlert(ts); }}
+
+// Actualizar badge de pausas en sidebar
+(function updatePausasBadge() {{
+  const b = document.getElementById('side-pausas-count');
+  if (b && typeof FUSION_EVENTS !== 'undefined') {{
+    b.textContent = FUSION_EVENTS.length || 0;
+    const nInjust = FUSION_EVENTS.filter(e => e.estado === 'INACTIVIDAD_INJUSTIFICADA').length;
+    if (nInjust > 0) b.style.background = 'var(--red)';
+  }}
+}})();
+
 // ═══════════════════════════════════════════════════════════════
 // LIGHT / DARK THEME TOGGLE
 // ═══════════════════════════════════════════════════════════════
@@ -1577,7 +1613,7 @@ async function exportCurrentView() {{
 }}
 
 async function exportAllGrouped() {{
-  const views = ['overview','live','cycles','alerts','insights','simulator'];
+  const views = ['overview','live','pausas','cycles','alerts','insights','simulator'];
   const {{ jsPDF }} = window.jspdf;
   const pdf = new jsPDF({{ orientation:'portrait', unit:'mm', format:'a4' }});
   const W = 210, H = 297;
@@ -2691,6 +2727,165 @@ def _hex_to_rgb(hex_str: str) -> str:
         return f'{r},{g},{b}'
     except Exception:
         return '128,128,128'
+
+
+def _pausas_view(visual: Dict) -> str:
+    """
+    Vista "Pausas del Operador" — eventos clasificados en 3 estados.
+    Cards clickeables que hacen seek al video.
+    Integrado del proyecto jevi con su filosofía de clasificación.
+    """
+    events = visual.get('fusion_events', [])
+    total_inactivo = visual.get('total_inactivo_s', 0)
+
+    state_config = {
+        'INACTIVIDAD_JUSTIFICADA': {
+            'color': C['yellow'], 'icon': '⏸',
+            'label': 'Inactividad Justificada',
+            'short': 'Justificada',
+        },
+        'INACTIVIDAD_INJUSTIFICADA': {
+            'color': C['red'], 'icon': '⚠',
+            'label': 'Inactividad Injustificada',
+            'short': 'Injustificada',
+        },
+        'ACTIVIDAD_CONTRAPRODUCENTE': {
+            'color': C['purple'], 'icon': '↯',
+            'label': 'Actividad Contraproducente',
+            'short': 'Contraproducente',
+        },
+    }
+
+    # Contar por estado
+    n_just = sum(1 for e in events if e.get('estado') == 'INACTIVIDAD_JUSTIFICADA')
+    n_injust = sum(1 for e in events if e.get('estado') == 'INACTIVIDAD_INJUSTIFICADA')
+    n_cp = sum(1 for e in events if e.get('estado') == 'ACTIVIDAD_CONTRAPRODUCENTE')
+
+    if not events:
+        return f"""
+        <div class="panel" style="padding:30px;text-align:center">
+          <div style="font-size:2.5rem;margin-bottom:10px">✓</div>
+          <h3 style="color:{C['green']};margin-bottom:8px">Sin pausas detectadas</h3>
+          <p style="color:{C['muted']};font-size:.85rem">
+            La fusión IMU + Optical Flow no detectó períodos de inactividad ni actividad
+            contraproducente en la ventana observada.
+          </p>
+        </div>
+        """
+
+    # Header con contadores
+    header = f"""
+    <div class="sec">
+      <div class="panel" style="padding:14px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
+          <div style="text-align:center;padding:10px;background:rgba({_hex_to_rgb(C['red'])},.08);
+                      border:1px solid {C['red']};border-radius:8px">
+            <div style="font-size:1.6rem">⚠</div>
+            <div style="font-size:1.8rem;font-weight:700;color:{C['red']};font-family:monospace">{n_injust}</div>
+            <div style="font-size:.72rem;color:{C['muted']}">Inactividad Injustificada</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:rgba({_hex_to_rgb(C['yellow'])},.08);
+                      border:1px solid {C['yellow']};border-radius:8px">
+            <div style="font-size:1.6rem">⏸</div>
+            <div style="font-size:1.8rem;font-weight:700;color:{C['yellow']};font-family:monospace">{n_just}</div>
+            <div style="font-size:.72rem;color:{C['muted']}">Inactividad Justificada</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:rgba({_hex_to_rgb(C['purple'])},.08);
+                      border:1px solid {C['purple']};border-radius:8px">
+            <div style="font-size:1.6rem">↯</div>
+            <div style="font-size:1.8rem;font-weight:700;color:{C['purple']};font-family:monospace">{n_cp}</div>
+            <div style="font-size:.72rem;color:{C['muted']}">Contraproducente</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:{C['panel2']};
+                      border:1px solid {C['border']};border-radius:8px">
+            <div style="font-size:1.6rem">⏱</div>
+            <div style="font-size:1.8rem;font-weight:700;color:{C['blue']};font-family:monospace">{total_inactivo:.0f}s</div>
+            <div style="font-size:.72rem;color:{C['muted']}">Tiempo Inactivo Total</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+
+    # Cards por evento
+    cards_html = ''
+    for idx, ev in enumerate(events):
+        state = ev.get('estado', 'INACTIVIDAD_INJUSTIFICADA')
+        cfg = state_config.get(state, state_config['INACTIVIDAD_INJUSTIFICADA'])
+        t_start = ev.get('tiempo_inicio_s', 0)
+        t_end = ev.get('tiempo_fin_s', 0)
+        dur = ev.get('duracion_s', 0)
+
+        # Formato mm:ss.sss
+        def _fmt_t(s):
+            m = int(s) // 60
+            return f'{m:02d}:{s - m*60:06.3f}'
+
+        extras = ''
+        if state == 'ACTIVIDAD_CONTRAPRODUCENTE':
+            p = ev.get('periodicity', 0)
+            extras = f'<div style="color:{C["muted"]};font-size:.68rem;margin-top:4px">Periodicity: {p:.2f} (< 0.15 = no ciclos productivos)</div>'
+
+        cards_html += f"""
+        <div class="pausa-card" onclick="seekToTime({t_start})"
+             style="background:{C['panel']};border:1.5px solid {C['border']};
+                    border-radius:8px;padding:12px;cursor:pointer;
+                    transition:all .15s;position:relative"
+             onmouseover="this.style.borderColor='{cfg['color']}';this.style.background='{C['panel2']}'"
+             onmouseout="this.style.borderColor='{C['border']}';this.style.background='{C['panel']}'">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="color:{C['muted']};font-size:.7rem">#{idx + 1}</span>
+            <span style="color:{cfg['color']};font-size:.75rem;font-weight:700">⏱ {dur:.1f} s</span>
+          </div>
+          <div style="color:{C['text']};font-size:.9rem;font-weight:700;font-family:'Courier New',monospace;margin-bottom:8px">
+            {_fmt_t(t_start)}  →  {_fmt_t(t_end)}
+          </div>
+          <div style="display:inline-block;padding:3px 10px;border-radius:11px;
+                      background:rgba({_hex_to_rgb(cfg['color'])},.15);
+                      border:1px solid {cfg['color']};
+                      color:{cfg['color']};font-size:.7rem;font-weight:700">
+            {cfg['icon']}  {cfg['label']}
+          </div>
+          {extras}
+        </div>
+        """
+
+    return header + f"""
+    <div class="sec">
+      <div class="sec-title">Eventos detectados ({len(events)})</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">
+        {cards_html}
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-title">Cómo se detectan estos eventos</div>
+      <div class="panel" style="padding:14px">
+        <div style="color:{C['text']};font-size:.82rem;line-height:1.6">
+          <p style="margin-bottom:10px">
+            <b style="color:{C['blue']}">Fusión estricta IMU + Cámara</b>:
+            se marca INACTIVO cuando <b>TODOS</b> los 3 criterios se cumplen en una ventana de 2s:
+          </p>
+          <ul style="margin-left:20px;color:{C['muted']};font-size:.78rem;line-height:1.8">
+            <li><b>acc_net</b> &lt; 3.0 m/s² (aceleración sin gravedad)</li>
+            <li><b>gyro_mag</b> &lt; 18.0 deg/s (velocidad angular total)</li>
+            <li><b>cam_motion</b> &lt; 1.3 px/frame (optical flow Farneback)</li>
+          </ul>
+          <p style="margin-top:12px;margin-bottom:6px">
+            <b style="color:{C['yellow']}">Clasificación JUSTIFICADA vs INJUSTIFICADA</b>:
+            se mira el <b>gyro_mean en los 15s previos</b> al idle.
+            Si venía girando fuerte (&gt; 10.5 deg/s) → INJUSTIFICADA (esperando camión).
+            Si venía moderado → JUSTIFICADA (pausa natural).
+          </p>
+          <p style="margin-top:10px">
+            <b style="color:{C['purple']}">CONTRAPRODUCENTE</b>:
+            segmentos activos &gt; 180s donde la autocorrelación del gyro no muestra
+            patrón periódico (&lt; 0.15) → pala moviéndose sin ciclo productivo.
+          </p>
+        </div>
+      </div>
+    </div>
+    """
 
 
 def _insights_view(metrics, idle: Dict, ipo, transport, visual: Dict) -> str:

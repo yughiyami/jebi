@@ -25,6 +25,13 @@ from motion_detector import (
     compute_productivity_loss_alerts,
     motion_timeline_to_dict,
     MotionTimeline,
+    fuse_imu_motion,
+    extract_idle_segments_from_fusion,
+)
+from state_classifier import (
+    classify_idle,
+    detect_contraproductive,
+    STATES as OPERATOR_STATES,
 )
 
 
@@ -34,9 +41,14 @@ def run_visual_validation(video_path: str,
                            duration_s: float,
                            wait_events: List,
                            cycles: List,
-                           interval_s: float = 1.0) -> Dict:
+                           interval_s: float = 1.0,
+                           df_imu=None) -> Dict:
     """
     Pipeline completo de validación visual con optical flow.
+
+    Si se provee `df_imu`, también corre la FUSIÓN estricta al estilo jevi:
+    detecta idle cuando IMU y cámara concuerdan, clasifica en 3 estados
+    (justificada / injustificada / contraproducente).
 
     Args:
         video_path:   path al video (left o right)
@@ -44,11 +56,13 @@ def run_visual_validation(video_path: str,
         wait_events:  list[WaitEvent] del IMU
         cycles:       list[LoadCycle] del IMU
         interval_s:   cada cuánto muestrear (1.0s default)
+        df_imu:       DataFrame del IMU (opcional, habilita fusion)
 
     Returns:
         Dict serializable con:
           - motion_timeline:       serie temporal de motion
           - verified_idle:         métricas de idle cruzado IMU+visual
+          - fusion_events:         eventos ops (pausas clasificadas)  ← NUEVO
           - wait_confidence:       confianza por cada wait_event
           - cycle_confidence:      confianza por cada cycle
           - productivity_alerts:   alertas operador por pérdida productiva
@@ -70,6 +84,46 @@ def run_visual_validation(video_path: str,
 
     # 3. Alertas de pérdida productiva (idle periods detectados por visual)
     prod_alerts = compute_productivity_loss_alerts(motion_tl.idle_periods)
+
+    # 4. FUSIÓN ESTRICTA estilo jevi + clasificación de 3 estados ─────────────
+    # Usa thresholds ground-truth (acc<3, gyro<18, cam<1.3) + ventana rodante.
+    # Esto da los "eventos del operador" para mostrar en el dashboard.
+    fusion_events: List[Dict] = []
+    total_inactivo_s = 0.0
+    if df_imu is not None:
+        try:
+            print('  [validator] Ejecutando fusión IMU+Cámara (ground-truth)...')
+            df_fused = fuse_imu_motion(df_imu, motion_tl)
+            idle_segs = extract_idle_segments_from_fusion(df_fused, min_duration_s=9.0)
+
+            # Clasificar cada idle segment en JUSTIFICADA / INJUSTIFICADA
+            classified_idles = [
+                {**s, 'estado': classify_idle(s, df_fused)}
+                for s in idle_segs
+            ]
+            # Detectar períodos CONTRAPRODUCENTES (activo sin periodicidad)
+            cp_events = detect_contraproductive(df_fused, idle_segs)
+
+            # Merge y ordenar por timestamp
+            fusion_events = sorted(
+                classified_idles + cp_events,
+                key=lambda e: e['tiempo_inicio_s'],
+            )
+
+            total_inactivo_s = sum(e['duracion_s'] for e in classified_idles)
+
+            # Stats por categoría
+            n_just = sum(1 for e in classified_idles
+                         if e['estado'] == 'INACTIVIDAD_JUSTIFICADA')
+            n_injust = sum(1 for e in classified_idles
+                           if e['estado'] == 'INACTIVIDAD_INJUSTIFICADA')
+            n_cp = len(cp_events)
+            print(f'  [validator] Fusión: {len(classified_idles)} idles '
+                  f'(⚠{n_injust} injust + ⏸{n_just} just) + ↯{n_cp} contraprod.')
+            print(f'  [validator] Tiempo inactivo total (fusión): {total_inactivo_s:.1f}s')
+        except Exception as e:
+            print(f'  [validator] Fusión falló: {e}')
+            fusion_events = []
 
     # 4. Detectar discrepancias concretas
     disagreements = []
@@ -108,6 +162,8 @@ def run_visual_validation(video_path: str,
     return {
         'motion_timeline':      motion_timeline_to_dict(motion_tl),
         'verified_idle':        verified,
+        'fusion_events':        fusion_events,
+        'total_inactivo_s':     round(total_inactivo_s, 1),
         'wait_confidence':      wait_conf,
         'cycle_confidence':     cycle_conf,
         'productivity_alerts':  prod_alerts,
@@ -127,6 +183,8 @@ def _empty_result(interval_s: float) -> Dict:
             'agreement_pct':      0.0, 'confidence': 'LOW',
             'confidence_score':   0.0, 'n_idle_periods_visual': 0,
         },
+        'fusion_events':       [],
+        'total_inactivo_s':    0.0,
         'wait_confidence':     [],
         'cycle_confidence':    [],
         'productivity_alerts': [],

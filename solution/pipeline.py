@@ -123,6 +123,7 @@ def run(inputs_dir, outputs_dir):
                 wait_events = waits,
                 cycles      = cycles,
                 interval_s  = 1.0,   # 1 sample/s sobre video completo (muy rápido)
+                df_imu      = df,    # habilita fusión estricta + 3 estados
             )
             # Enriquecer el idle_index con la validación
             idle_index = enhance_idle_index(idle_index, visual_validation)
