@@ -379,6 +379,40 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
 .bpmn-bar-fill{{height:100%;transition:width .4s ease}}
 .bpmn-note{{font-size:0.7rem;color:{C['muted']}}}
 
+/* ═══════════════════ VISTA OPERADOR ═══════════════════ */
+.op-layout{{display:grid;grid-template-columns:1fr 360px;gap:12px;height:calc(100vh - 110px);min-height:500px}}
+.op-left{{display:flex;flex-direction:column;gap:10px;min-width:0}}
+.op-video-wrap{{flex:1;background:#000;border-radius:10px;overflow:hidden;position:relative;min-height:300px;border:1px solid {C['border']}}}
+.op-banner{{position:absolute;top:0;left:0;right:0;padding:10px 16px;font-weight:700;font-size:1rem;color:#fff;text-align:center;letter-spacing:.03em;backdrop-filter:blur(3px)}}
+.op-status{{position:absolute;top:10px;right:10px;padding:6px 12px;border-radius:6px;background:rgba(0,0,0,.7);color:{C['green']};font-weight:700;font-size:.85rem;border:1px solid rgba(63,185,80,.3)}}
+.op-timeline-wrap{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;padding:10px 14px}}
+#op-timeline-bar{{position:relative;height:18px;background:{C['border']};border-radius:9px;cursor:pointer;overflow:hidden}}
+.op-tl-prog{{position:absolute;top:0;left:0;height:100%;background:{C['blue']};transition:width .05s}}
+.op-tl-seg{{position:absolute;top:0;height:100%;opacity:.85;border-left:1px solid rgba(0,0,0,.2);border-right:1px solid rgba(0,0,0,.2)}}
+.op-time-info{{font-size:.8rem;color:{C['text']};margin-top:6px;text-align:center}}
+.op-stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}}
+.op-stat{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;padding:10px;text-align:center}}
+.op-stat-val{{font-size:1.6rem;font-weight:700;font-family:monospace;line-height:1}}
+.op-stat-lbl{{font-size:.68rem;color:{C['muted']};margin-top:4px;text-transform:uppercase;letter-spacing:.04em}}
+.op-right{{display:flex;flex-direction:column;gap:8px;background:{C['panel']};border:1px solid {C['border']};border-radius:10px;padding:10px;min-height:400px}}
+.op-hdr{{font-size:.72rem;font-weight:700;color:{C['muted']};text-transform:uppercase;letter-spacing:.08em;padding:4px 2px}}
+.op-filter{{display:flex;gap:4px;flex-wrap:wrap}}
+.op-filter button{{flex:1;min-width:60px;background:{C['panel2']};color:{C['muted']};border:1px solid {C['border']};border-radius:5px;padding:5px 8px;cursor:pointer;font-size:.68rem;font-weight:600;transition:all .15s}}
+.op-filter button.active{{background:{C['blue']};color:#fff;border-color:{C['blue']}}}
+.op-filter button:hover{{border-color:{C['blue']}}}
+.op-cards{{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px}}
+.op-card{{background:{C['panel2']};border:1.5px solid {C['border']};border-radius:8px;padding:10px 12px;cursor:pointer;transition:all .15s;position:relative}}
+.op-card:hover{{background:#1c2128;transform:translateX(-2px)}}
+.op-card.active{{background:#1c2128}}
+.op-card-row{{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}}
+.op-card-num{{color:{C['muted']};font-size:.65rem}}
+.op-card-dur{{font-size:.7rem;font-weight:700;font-family:monospace}}
+.op-card-time{{color:{C['text']};font-size:.78rem;font-weight:700;font-family:monospace;margin-bottom:6px}}
+.op-card-pill{{display:inline-block;padding:2px 9px;border-radius:10px;font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em}}
+.op-cards::-webkit-scrollbar{{width:6px}}
+.op-cards::-webkit-scrollbar-track{{background:{C['panel2']};border-radius:3px}}
+.op-cards::-webkit-scrollbar-thumb{{background:{C['border']};border-radius:3px}}
+
 /* ═══════════════════ RESPONSIVE BREAKPOINTS ═══════════════════ */
 
 /* TABLETS y laptops chicos: <= 1024px */
@@ -395,6 +429,13 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   .hdr .meta{{display:none}}
   #prod-banner{{padding:12px 16px !important}}
   .video-wrap video{{height:200px}}
+}}
+
+/* Operador: en pantallas más chicas, colapsa lateral a abajo */
+@media (max-width: 1100px) {{
+  .op-layout{{grid-template-columns:1fr;height:auto;min-height:auto}}
+  .op-right{{min-height:320px;max-height:500px}}
+  .op-video-wrap{{min-height:280px;aspect-ratio:16/9}}
 }}
 
 /* TABLETS: <= 768px — sidebar colapsa a topbar horizontal */
@@ -557,7 +598,7 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
 <!-- SIDEBAR -->
 <aside class="sidebar">
   <div class="side-head">Vistas</div>
-  <div class="side-item active" data-view="overview" onclick="switchView('overview')">
+  <div class="side-item" data-view="overview" onclick="switchView('overview')">
     <span class="side-icon">📊</span><span>Overview</span>
   </div>
   <div class="side-item" data-view="ipo" onclick="switchView('ipo')">
@@ -566,11 +607,15 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
   <div class="side-item" data-view="idle" onclick="switchView('idle')">
     <span class="side-icon">⏱️</span><span>Tiempos de Ocio</span>
   </div>
+  <div class="side-item active" data-view="operator" onclick="switchView('operator')">
+    <span class="side-icon">👷</span><span>Vista Operador</span>
+    <span class="side-badge" id="side-operator-count" style="background:var(--red)">0</span>
+  </div>
   <div class="side-item" data-view="live" onclick="switchView('live')">
-    <span class="side-icon">🎥</span><span>Video &amp; Live</span>
+    <span class="side-icon">🎥</span><span>Video &amp; Live (detalle)</span>
   </div>
   <div class="side-item" data-view="pausas" onclick="switchView('pausas')">
-    <span class="side-icon">⏸</span><span>Pausas del Operador</span>
+    <span class="side-icon">⏸</span><span>Pausas (lista completa)</span>
     <span class="side-badge" id="side-pausas-count">0</span>
   </div>
   <div class="side-item" data-view="cycles" onclick="switchView('cycles')">
@@ -607,7 +652,69 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
 <main class="main">
 
 <!-- ═══════════ VIEW: OVERVIEW (default) ═══════════ -->
-<div class="view active" id="view-overview" data-view="overview">
+<!-- ═══════════ VIEW: OPERADOR (landing default) ═══════════ -->
+<!-- Vista simplificada inspirada en jevi/dashboard.py:
+     video grande a la izquierda, lista de pausas a la derecha.
+     Pensada para el operador en planta, sin distracciones. -->
+<div class="view active" id="view-operator" data-view="operator">
+  <div class="op-layout">
+    <!-- IZQ: Video grande + timeline + controles -->
+    <div class="op-left">
+      <div class="op-video-wrap">
+        <video id="op-video" src="../inputs/shovel_left.mp4"
+               muted playsinline preload="auto" controls
+               style="width:100%;height:100%;object-fit:contain;background:#000"></video>
+        <div id="op-banner" class="op-banner" style="display:none"></div>
+        <div id="op-status" class="op-status">● ACTIVO</div>
+      </div>
+      <div class="op-timeline-wrap">
+        <div id="op-timeline-bar"></div>
+        <div class="op-time-info">
+          <span id="op-time-cur" style="font-family:monospace">00:00.000</span>
+          <span style="color:var(--muted)"> / </span>
+          <span id="op-time-total" style="font-family:monospace;color:var(--muted)">--:--.---</span>
+        </div>
+      </div>
+      <div class="op-stats">
+        <div class="op-stat">
+          <div class="op-stat-val" id="op-stat-injust" style="color:var(--red)">0</div>
+          <div class="op-stat-lbl">⚠ Injust.</div>
+        </div>
+        <div class="op-stat">
+          <div class="op-stat-val" id="op-stat-just" style="color:var(--yellow)">0</div>
+          <div class="op-stat-lbl">⏸ Just.</div>
+        </div>
+        <div class="op-stat">
+          <div class="op-stat-val" id="op-stat-cp" style="color:var(--purple)">0</div>
+          <div class="op-stat-lbl">↯ Contraprod.</div>
+        </div>
+        <div class="op-stat">
+          <div class="op-stat-val" id="op-stat-idle" style="color:var(--blue)">0s</div>
+          <div class="op-stat-lbl">⏱ Inactivo</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DER: Lista de eventos (cards scroll) -->
+    <div class="op-right">
+      <div class="op-hdr">
+        EVENTOS DETECTADOS
+        <span id="op-ev-total" style="color:var(--muted);font-weight:400;margin-left:8px">0</span>
+      </div>
+      <div class="op-filter">
+        <button onclick="opFilter('all', this)" class="active" data-f="all">Todos</button>
+        <button onclick="opFilter('INACTIVIDAD_INJUSTIFICADA', this)" data-f="INACTIVIDAD_INJUSTIFICADA">⚠ Injust.</button>
+        <button onclick="opFilter('INACTIVIDAD_JUSTIFICADA', this)" data-f="INACTIVIDAD_JUSTIFICADA">⏸ Just.</button>
+        <button onclick="opFilter('ACTIVIDAD_CONTRAPRODUCENTE', this)" data-f="ACTIVIDAD_CONTRAPRODUCENTE">↯ C.prod.</button>
+      </div>
+      <div id="op-cards" class="op-cards">
+        <!-- cards rendered by JS -->
+      </div>
+    </div>
+  </div>
+</div><!-- /view-operator -->
+
+<div class="view" id="view-overview" data-view="overview">
   <div class="view-hdr">
     <div>
       <h2>Overview de la Sesion</h2>
@@ -1575,6 +1682,223 @@ function seekToTime(ts) {{ seekToAlert(ts); }}
     if (nInjust > 0) b.style.background = 'var(--red)';
   }}
 }})();
+
+// ═══════════════════════════════════════════════════════════════
+// VISTA OPERADOR — Video grande + cards de eventos
+// Inspirada en jevi/dashboard.py pero en HTML puro.
+// ═══════════════════════════════════════════════════════════════
+const OP_STATES_CFG = {{
+  'INACTIVIDAD_JUSTIFICADA':    {{color:'{C['yellow']}', icon:'⏸', label:'JUST.'}},
+  'INACTIVIDAD_INJUSTIFICADA':  {{color:'{C['red']}',    icon:'⚠', label:'INJUST.'}},
+  'ACTIVIDAD_CONTRAPRODUCENTE': {{color:'{C['purple']}', icon:'↯', label:'CONTRAPROD.'}},
+}};
+let opFilterState = 'all';
+let opActiveCard = null;
+
+function _opFmtTime(s) {{
+  const m = Math.floor(s / 60);
+  return `${{String(m).padStart(2,'0')}}:${{(s - m*60).toFixed(3).padStart(6,'0')}}`;
+}}
+
+function _opEventAt(t) {{
+  for (let i = 0; i < FUSION_EVENTS.length; i++) {{
+    const e = FUSION_EVENTS[i];
+    if (e.tiempo_inicio_s <= t && t <= e.tiempo_fin_s) return {{ev:e, idx:i}};
+  }}
+  return {{ev:null, idx:-1}};
+}}
+
+function _opRenderCards() {{
+  const container = document.getElementById('op-cards');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const filtered = opFilterState === 'all'
+    ? FUSION_EVENTS
+    : FUSION_EVENTS.filter(e => e.estado === opFilterState);
+
+  if (filtered.length === 0) {{
+    container.innerHTML = `<div style="text-align:center;padding:30px;color:var(--muted);font-size:.8rem">
+      ${{opFilterState === 'all' ? 'Sin eventos detectados' : 'Sin eventos del tipo seleccionado'}}
+    </div>`;
+    return;
+  }}
+
+  filtered.forEach((ev) => {{
+    const cfg = OP_STATES_CFG[ev.estado] || OP_STATES_CFG['INACTIVIDAD_INJUSTIFICADA'];
+    const realIdx = FUSION_EVENTS.indexOf(ev);
+    const card = document.createElement('div');
+    card.className = 'op-card';
+    card.dataset.idx = realIdx;
+    card.dataset.tstart = ev.tiempo_inicio_s;
+    card.innerHTML = `
+      <div class="op-card-row">
+        <span class="op-card-num">#${{realIdx + 1}}</span>
+        <span class="op-card-dur" style="color:${{cfg.color}}">⏱ ${{ev.duracion_s.toFixed(1)}}s</span>
+      </div>
+      <div class="op-card-time">${{_opFmtTime(ev.tiempo_inicio_s)}} → ${{_opFmtTime(ev.tiempo_fin_s)}}</div>
+      <div class="op-card-pill" style="background:rgba(${{_rgbFromHex(cfg.color)}},.15);color:${{cfg.color}};border:1px solid ${{cfg.color}}">
+        ${{cfg.icon}} ${{cfg.label}}
+      </div>
+    `;
+    card.addEventListener('click', () => _opSeekTo(ev.tiempo_inicio_s));
+    container.appendChild(card);
+  }});
+}}
+
+function _rgbFromHex(hex) {{
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substr(0,2), 16);
+  const g = parseInt(h.substr(2,2), 16);
+  const b = parseInt(h.substr(4,2), 16);
+  return `${{r}},${{g}},${{b}}`;
+}}
+
+function opFilter(state, btn) {{
+  opFilterState = state;
+  document.querySelectorAll('.op-filter button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  _opRenderCards();
+}}
+
+function _opSeekTo(ts) {{
+  const v = document.getElementById('op-video');
+  if (!v) return;
+  try {{
+    if (v.readyState >= 1) v.currentTime = ts;
+    else v.addEventListener('loadedmetadata', () => {{ v.currentTime = ts; }}, {{once:true}});
+    v.play().catch(()=>{{}});
+  }} catch(e) {{}}
+}}
+
+function _opRenderTimelineSegments() {{
+  const bar = document.getElementById('op-timeline-bar');
+  if (!bar) return;
+  // Limpiar segments anteriores
+  bar.querySelectorAll('.op-tl-seg, .op-tl-prog').forEach(el => el.remove());
+
+  const v = document.getElementById('op-video');
+  const total = (v && v.duration) ? v.duration : 1;
+
+  // Segmentos de eventos
+  FUSION_EVENTS.forEach(ev => {{
+    const cfg = OP_STATES_CFG[ev.estado];
+    if (!cfg) return;
+    const left = (ev.tiempo_inicio_s / total) * 100;
+    const width = ((ev.tiempo_fin_s - ev.tiempo_inicio_s) / total) * 100;
+    const seg = document.createElement('div');
+    seg.className = 'op-tl-seg';
+    seg.style.cssText = `left:${{left}}%;width:${{Math.max(0.4, width)}}%;background:${{cfg.color}}`;
+    seg.title = `${{cfg.label}} · ${{ev.duracion_s.toFixed(1)}}s`;
+    seg.onclick = (e) => {{ e.stopPropagation(); _opSeekTo(ev.tiempo_inicio_s); }};
+    bar.appendChild(seg);
+  }});
+
+  // Barra de progreso (encima)
+  const prog = document.createElement('div');
+  prog.className = 'op-tl-prog';
+  prog.id = 'op-tl-prog';
+  prog.style.width = '0%';
+  bar.appendChild(prog);
+}}
+
+function _opUpdateBanner(ev) {{
+  const banner = document.getElementById('op-banner');
+  const status = document.getElementById('op-status');
+  if (!banner || !status) return;
+  if (ev) {{
+    const cfg = OP_STATES_CFG[ev.estado];
+    banner.style.display = 'block';
+    banner.style.background = `rgba(${{_rgbFromHex(cfg.color)}},.85)`;
+    banner.textContent = `${{cfg.icon}}  ${{cfg.label}}  ·  ${{ev.duracion_s.toFixed(1)}}s`;
+    status.textContent = `${{cfg.icon}} ${{cfg.label}}`;
+    status.style.color = cfg.color;
+    status.style.borderColor = cfg.color;
+  }} else {{
+    banner.style.display = 'none';
+    status.textContent = '● ACTIVO';
+    status.style.color = 'var(--green)';
+    status.style.borderColor = 'rgba(63,185,80,.3)';
+  }}
+}}
+
+function _opHighlightCard(idx) {{
+  if (opActiveCard === idx) return;
+  document.querySelectorAll('.op-card').forEach(c => c.classList.remove('active'));
+  if (idx >= 0) {{
+    const cards = document.querySelectorAll('.op-card');
+    for (const c of cards) {{
+      if (parseInt(c.dataset.idx) === idx) {{
+        c.classList.add('active');
+        c.scrollIntoView({{ behavior:'smooth', block:'nearest' }});
+        break;
+      }}
+    }}
+  }}
+  opActiveCard = idx;
+}}
+
+function _opInitVideo() {{
+  const v = document.getElementById('op-video');
+  if (!v) return;
+
+  // Contadores en las estadísticas
+  const nInj = FUSION_EVENTS.filter(e => e.estado === 'INACTIVIDAD_INJUSTIFICADA').length;
+  const nJust = FUSION_EVENTS.filter(e => e.estado === 'INACTIVIDAD_JUSTIFICADA').length;
+  const nCp = FUSION_EVENTS.filter(e => e.estado === 'ACTIVIDAD_CONTRAPRODUCENTE').length;
+  const totalIdle = FUSION_EVENTS
+    .filter(e => e.estado !== 'ACTIVIDAD_CONTRAPRODUCENTE')
+    .reduce((s, e) => s + e.duracion_s, 0);
+  const setTxt = (id, val) => {{ const el = document.getElementById(id); if (el) el.textContent = val; }};
+  setTxt('op-stat-injust', nInj);
+  setTxt('op-stat-just', nJust);
+  setTxt('op-stat-cp', nCp);
+  setTxt('op-stat-idle', totalIdle.toFixed(0) + 's');
+  setTxt('op-ev-total', FUSION_EVENTS.length);
+
+  // Sidebar badge
+  const sideOp = document.getElementById('side-operator-count');
+  if (sideOp) {{
+    sideOp.textContent = nInj > 0 ? nInj : FUSION_EVENTS.length;
+    sideOp.style.background = nInj > 0 ? 'var(--red)' : 'var(--info)';
+  }}
+
+  // Cards
+  _opRenderCards();
+
+  // Timeline segments
+  v.addEventListener('loadedmetadata', () => {{
+    const tot = document.getElementById('op-time-total');
+    if (tot) tot.textContent = _opFmtTime(v.duration);
+    _opRenderTimelineSegments();
+  }});
+
+  // Timeline update on play
+  v.addEventListener('timeupdate', () => {{
+    const cur = document.getElementById('op-time-cur');
+    if (cur) cur.textContent = _opFmtTime(v.currentTime);
+    const prog = document.getElementById('op-tl-prog');
+    if (prog && v.duration) prog.style.width = (v.currentTime / v.duration * 100) + '%';
+
+    const {{ev, idx}} = _opEventAt(v.currentTime);
+    _opUpdateBanner(ev);
+    _opHighlightCard(idx);
+  }});
+
+  // Seek por click en timeline bar
+  const bar = document.getElementById('op-timeline-bar');
+  if (bar) {{
+    bar.addEventListener('click', (e) => {{
+      if (e.target !== bar) return;  // los segs tienen su propio handler
+      const rect = bar.getBoundingClientRect();
+      const frac = (e.clientX - rect.left) / rect.width;
+      if (v.duration) v.currentTime = Math.max(0, Math.min(v.duration, frac * v.duration));
+    }});
+  }}
+}}
+
+// Init al cargar
+window.addEventListener('load', _opInitVideo);
 
 // ═══════════════════════════════════════════════════════════════
 // LIGHT / DARK THEME TOGGLE

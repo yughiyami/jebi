@@ -85,16 +85,28 @@ def run_visual_validation(video_path: str,
     # 3. Alertas de pérdida productiva (idle periods detectados por visual)
     prod_alerts = compute_productivity_loss_alerts(motion_tl.idle_periods)
 
-    # 4. FUSIÓN ESTRICTA estilo jevi + clasificación de 3 estados ─────────────
-    # Usa thresholds ground-truth (acc<3, gyro<18, cam<1.3) + ventana rodante.
-    # Esto da los "eventos del operador" para mostrar en el dashboard.
+    # 4. CLASIFICACIÓN de idle periods detectados por optical flow ─────────────
+    # Usa los idle_periods del motion_tl (ya validados contra el video real,
+    # detectaron los 2:40 y 4:54 que el operador confirmó). Para cada uno,
+    # clasificamos usando el state_classifier (justificada vs injustificada).
+    # Además detectamos actividad contraproductive en los segmentos activos.
     fusion_events: List[Dict] = []
     total_inactivo_s = 0.0
     if df_imu is not None:
         try:
-            print('  [validator] Ejecutando fusión IMU+Cámara (ground-truth)...')
+            print('  [validator] Clasificando idle periods visuales + contraprod...')
+            # Preparar df_imu con features para el classifier
             df_fused = fuse_imu_motion(df_imu, motion_tl)
-            idle_segs = extract_idle_segments_from_fusion(df_fused, min_duration_s=9.0)
+
+            # Los idle periods reales = los del motion_tl (visualmente confirmados)
+            idle_segs = [
+                {
+                    'tiempo_inicio_s': p.t_start,
+                    'tiempo_fin_s':    p.t_end,
+                    'duracion_s':      p.duration_s,
+                }
+                for p in motion_tl.idle_periods
+            ]
 
             # Clasificar cada idle segment en JUSTIFICADA / INJUSTIFICADA
             classified_idles = [
@@ -118,11 +130,12 @@ def run_visual_validation(video_path: str,
             n_injust = sum(1 for e in classified_idles
                            if e['estado'] == 'INACTIVIDAD_INJUSTIFICADA')
             n_cp = len(cp_events)
-            print(f'  [validator] Fusión: {len(classified_idles)} idles '
+            print(f'  [validator] Clasificación: {len(classified_idles)} idles '
                   f'(⚠{n_injust} injust + ⏸{n_just} just) + ↯{n_cp} contraprod.')
-            print(f'  [validator] Tiempo inactivo total (fusión): {total_inactivo_s:.1f}s')
+            print(f'  [validator] Tiempo inactivo total (verificado): {total_inactivo_s:.1f}s')
         except Exception as e:
-            print(f'  [validator] Fusión falló: {e}')
+            print(f'  [validator] Clasificación falló: {e}')
+            import traceback; traceback.print_exc()
             fusion_events = []
 
     # 4. Detectar discrepancias concretas
