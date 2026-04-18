@@ -81,9 +81,18 @@ class SessionMetrics:
 
 # ─── CARGA DEL IMU ────────────────────────────────────────────────────────────
 
-def load_imu(path: str) -> pd.DataFrame:
+def load_imu(path: str, sync_duration_s: float = None) -> pd.DataFrame:
     """
     Carga IMU desde CSV o NPY.
+
+    Args:
+        path: Path al CSV/NPY del IMU.
+        sync_duration_s: Si se provee, REEMPLAZA los timestamps del IMU con
+            una grilla uniforme sobre [0, sync_duration_s]. Esto sirve cuando
+            los timestamps del IMU tienen gaps irregulares pero son 1:1 con
+            los frames de un video (caso JEBI: 9403 IMU samples = 9403 video
+            frames, pero los dt del IMU son inconsistentes).
+
     Retorna DataFrame con columnas estandar:
       timestamp_s, ax, ay, az, gx, gy, gz, qw, qx, qy, qz
     """
@@ -106,16 +115,48 @@ def load_imu(path: str) -> pd.DataFrame:
     df['accel_norm'] = np.sqrt(df.ax**2 + df.ay**2 + df.az**2)
     df['gyro_norm']  = np.sqrt(df.gx**2 + df.gy**2 + df.gz**2)
 
+    # BUGFIX CRÍTICO: si tenemos la duración del video sincronizado,
+    # rebalanceamos los timestamps del IMU a una grilla uniforme [0, video_duration]
+    # Esto es porque el IMU del dataset JEBI tiene timestamps irregulares
+    # (gaps hasta 933ms) pero es 1:1 con frames del video (9403=9403).
+    # Usar timestamps inconsistentes → duración inflada (899s vs 627s real).
+    n = len(df)
+    if sync_duration_s is not None and sync_duration_s > 0:
+        original_duration = float(df['timestamp_s'].iloc[-1])
+        df['timestamp_s'] = np.linspace(0.0, sync_duration_s, n)
+        print(f"  IMU sincronizado al video: {original_duration:.1f}s → {sync_duration_s:.1f}s "
+              f"(corrección {sync_duration_s/max(original_duration,1e-9):.3f}x)")
+
     # Sampleo
     dt = float(np.mean(np.diff(df.timestamp_s.values)))
     df.attrs['fs']           = 1.0 / dt
     df.attrs['duration_s']   = float(df.timestamp_s.iloc[-1])
-    df.attrs['n_samples']    = len(df)
+    df.attrs['n_samples']    = n
 
-    print(f"  IMU cargado: {len(df)} muestras, "
+    print(f"  IMU cargado: {n} muestras, "
           f"fs={df.attrs['fs']:.1f}Hz, "
           f"duracion={df.attrs['duration_s']:.1f}s")
     return df
+
+
+def get_video_duration_s(video_path: str) -> float:
+    """
+    Obtiene la duración real del video en segundos.
+    Retorna 0 si no se puede leer.
+    """
+    if not video_path:
+        return 0.0
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        if fps > 0 and n_frames > 0:
+            return n_frames / fps
+    except Exception:
+        pass
+    return 0.0
 
 
 def _normalize_csv_columns(df: pd.DataFrame) -> pd.DataFrame:

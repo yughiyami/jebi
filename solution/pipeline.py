@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from imu_processor import load_imu, detect_cycles, cycles_to_dataframe
+from imu_processor import load_imu, detect_cycles, cycles_to_dataframe, get_video_duration_s
 from video_processor import process_video_events
 from metrics import (compute_efficiency_profiles, compute_truck_loads,
                      compute_transport_metrics, build_realtime_timeline,
@@ -41,13 +41,22 @@ def run(inputs_dir, outputs_dir):
     print('  JEBI 2026  Shovel Intelligence Pipeline v2')
     print('='*60)
 
+    # ── 0. Detectar duración del video (fuente de verdad) ──────────────────
+    # Los timestamps del IMU vienen con gaps irregulares, pero son 1:1 con
+    # los frames del video (9403 samples = 9403 frames). El video da la
+    # duración real (fps constante) así que la usamos como ground truth.
+    left_path_preview  = find_input(inputs_dir, INPUT_FILES['left'])
+    video_duration_s = get_video_duration_s(left_path_preview) if left_path_preview else 0.0
+
     # ── 1. IMU ────────────────────────────────────────────────────────────────
     imu_path = find_input(inputs_dir, INPUT_FILES['imu'])
     if not imu_path:
         print('ERROR: imu_data.csv no encontrado en inputs/'); sys.exit(1)
 
     print(f'\n[1/6] IMU: {os.path.basename(imu_path)}')
-    df = load_imu(imu_path)
+    if video_duration_s > 0:
+        print(f'  Video detectado: {video_duration_s:.1f}s - usando como ground truth')
+    df = load_imu(imu_path, sync_duration_s=video_duration_s if video_duration_s > 0 else None)
 
     # ── 2. Ciclos ─────────────────────────────────────────────────────────────
     print('\n[2/6] Detectando ciclos, mini-ciclos, wait events...')
