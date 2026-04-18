@@ -127,6 +127,9 @@ def _build(df_imu, cycles, wait_events, metrics, video_events,
 <html lang="es" data-theme="dark">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="description" content="JEBI Hackathon 2026 — Shovel Intelligence Dashboard con dual-source validation (IMU + Optical Flow)">
+<meta name="theme-color" content="#0d1117">
 <title>DIG | {label}</title>
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -181,12 +184,14 @@ body{{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI
 .container{{padding:14px 18px;max-width:1800px;margin:0 auto}}
 .sec{{margin-bottom:20px}}
 .sec-title{{font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:{C['muted']};border-bottom:1px solid {C['border']};padding-bottom:5px;margin-bottom:12px}}
-.row{{display:flex;gap:12px}}
-.col-video{{flex:0 0 960px}}
-.col-alerts{{flex:1;min-width:280px}}
-.g2{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}
-.g3{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}}
-.g4{{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px}}
+.row{{display:flex;gap:12px;flex-wrap:wrap}}
+/* BUGFIX responsive: col-video flexible en vez de ancho fijo de 960px */
+.col-video{{flex:1 1 600px;min-width:0;max-width:100%}}
+.col-alerts{{flex:1 1 280px;min-width:0}}
+/* BUGFIX responsive: grids con auto-fit para colapsar en pantallas chicas */
+.g2{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}}
+.g3{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}}
+.g4{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}}
 .full{{grid-column:1/-1}}
 .panel{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;padding:10px}}
 
@@ -199,10 +204,11 @@ body{{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI
 .g{{color:{C['green']}}}.w{{color:{C['yellow']}}}.r{{color:{C['red']}}}.b{{color:{C['blue']}}}
 
 /* VIDEO */
-.video-wrap{{display:flex;gap:4px;background:#000;border-radius:8px;overflow:hidden}}
-.video-wrap video{{flex:1;height:240px;object-fit:cover}}
+/* BUGFIX responsive: flex-wrap para que en mobile los videos se stacken */
+.video-wrap{{display:flex;gap:4px;background:#000;border-radius:8px;overflow:hidden;flex-wrap:wrap}}
+.video-wrap video{{flex:1 1 45%;min-width:0;height:240px;object-fit:cover;max-width:100%}}
 .video-label{{font-size:0.65rem;color:{C['muted']};margin-bottom:4px}}
-.video-overlay{{position:relative}}
+.video-overlay{{position:relative;flex:1 1 45%;min-width:0}}
 .video-overlay .ov{{position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.7);border-radius:4px;padding:2px 8px;font-size:0.65rem;color:#fff}}
 
 /* ALERTS */
@@ -216,8 +222,10 @@ body{{background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI
 @keyframes fadeIn{{from{{opacity:0;transform:translateY(-4px)}}to{{opacity:1;transform:translateY(0)}}}}
 
 /* GAUGE ROW */
-.gauge-row{{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between}}
-.gauge-box{{flex:1;min-width:180px;max-width:240px;background:{C['panel']};border:1px solid {C['border']};border-radius:8px;padding:8px}}
+/* BUGFIX responsive: grid auto-fit en vez de flex para que siempre se rendericen bien */
+.gauge-row{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}}
+.gauge-box{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;padding:8px;min-width:0;min-height:140px}}
+.gauge-box > div{{min-height:120px;width:100%}}
 .gauge-title{{font-size:0.65rem;text-transform:uppercase;color:{C['muted']};letter-spacing:.06em;margin-bottom:4px}}
 
 /* TABLES */
@@ -369,6 +377,140 @@ tr:hover td{{background:rgba(255,255,255,.02)}}
 .bpmn-bar{{height:8px;background:{C['panel2']};border-radius:4px;overflow:hidden;margin:8px 0 4px}}
 .bpmn-bar-fill{{height:100%;transition:width .4s ease}}
 .bpmn-note{{font-size:0.7rem;color:{C['muted']}}}
+
+/* ═══════════════════ RESPONSIVE BREAKPOINTS ═══════════════════ */
+
+/* TABLETS y laptops chicos: <= 1024px */
+@media (max-width: 1024px) {{
+  .sidebar{{width:180px;flex:0 0 180px}}
+  .side-item{{padding:8px 12px;font-size:0.78rem}}
+  .side-head{{padding:5px 12px}}
+  .kpi-val{{font-size:1.3rem}}
+  .kpi{{padding:10px 12px}}
+  .container{{padding:10px 12px}}
+  .view{{padding:12px 14px}}
+  .hdr{{padding:8px 14px}}
+  .hdr h1{{font-size:1rem}}
+  .hdr .meta{{display:none}}
+  #prod-banner{{padding:12px 16px !important}}
+  .video-wrap video{{height:200px}}
+}}
+
+/* TABLETS: <= 768px — sidebar colapsa a topbar horizontal */
+@media (max-width: 768px) {{
+  .app{{flex-direction:column}}
+  .sidebar{{
+    width:100%;flex:0 0 auto;height:auto;position:sticky;top:46px;
+    max-height:none;overflow-x:auto;overflow-y:hidden;white-space:nowrap;
+    padding:4px 0;border-right:none;border-bottom:1px solid {C['border']};
+    display:flex;flex-wrap:nowrap
+  }}
+  .sidebar .side-head,
+  .sidebar .side-divider{{display:none}}
+  .side-item{{
+    display:inline-flex;flex-direction:column;align-items:center;
+    padding:6px 10px;border-left:none;border-bottom:3px solid transparent;
+    font-size:0.65rem;min-width:70px;gap:3px;flex:0 0 auto
+  }}
+  .side-item.active{{border-left:none;border-bottom-color:{C['blue']}}}
+  .side-icon{{font-size:1.2rem;width:auto;height:auto}}
+  .side-item span:last-child{{font-size:0.62rem;text-align:center}}
+  .side-badge{{margin-left:0;margin-top:2px;font-size:0.55rem}}
+
+  .view{{padding:10px 12px}}
+  .kpi-grid{{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}}
+  .kpi-val{{font-size:1.15rem}}
+  .kpi{{padding:8px 10px}}
+  .view-hdr{{flex-wrap:wrap;gap:8px}}
+  .view-hdr h2{{font-size:0.95rem}}
+  .view-hdr .desc{{font-size:0.7rem}}
+  .view-actions{{flex-wrap:wrap;gap:4px}}
+  .view-actions .btn{{font-size:0.68rem;padding:4px 8px}}
+  .btn{{font-size:0.7rem;padding:5px 9px}}
+
+  #playbar{{flex-wrap:wrap;padding:6px 10px;gap:6px}}
+  #playbar #progress{{order:10;flex-basis:100%}}
+  .speed-btn{{font-size:0.65rem;padding:2px 6px}}
+
+  .video-wrap video{{height:160px;flex:1 1 100%}}
+  .video-overlay{{flex:1 1 100%}}
+  /* En tablet: 2 columnas de gauges */
+  .gauge-row{{grid-template-columns:repeat(2,1fr)}}
+  .gauge-box{{min-height:120px}}
+  .gauge-box > div{{min-height:100px}}
+  #alert-feed{{height:200px}}
+
+  table{{font-size:0.7rem}}
+  th,td{{padding:4px 6px}}
+  /* Tablas con muchas columnas: scroll horizontal */
+  .panel{{overflow-x:auto}}
+  /* Permite scrollear tablas horizontalmente sin romper layout */
+
+  .ipo-hero{{padding:16px}}
+  .ipo-big{{font-size:2.5rem}}
+  .ipo-band{{font-size:0.75rem}}
+  .ipo-components{{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}}
+  .ipo-comp-val{{font-size:1rem}}
+  .ipo-tbands{{grid-template-columns:1fr 1fr;gap:6px}}
+
+  .glossary dl{{grid-template-columns:1fr;gap:4px}}
+  .glossary dt{{margin-top:8px}}
+  .thumb-grid{{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}}
+  .ocr-grid{{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}}
+  .alert-grid-clips{{grid-template-columns:1fr}}
+  .sim-wrap{{grid-template-columns:1fr !important}}
+  .sim-canvas{{height:220px !important}}
+
+  .modal{{max-width:95%;width:95%}}
+  .modal-head{{padding:10px 14px;font-size:0.85rem}}
+  .modal-body{{padding:14px}}
+  .modal-icon{{font-size:1.3rem}}
+}}
+
+/* MOBILE: <= 480px — máxima compresión */
+@media (max-width: 480px) {{
+  body{{font-size:12px}}
+  .hdr{{padding:6px 10px;flex-wrap:wrap;gap:6px}}
+  .hdr h1{{font-size:0.9rem;letter-spacing:.05em !important}}
+  #phase-badge{{font-size:0.65rem;padding:2px 8px;margin-left:4px}}
+  #live-clock{{font-size:0.75rem}}
+  .theme-toggle{{width:28px;height:28px;font-size:14px}}
+
+  .view{{padding:8px 10px}}
+  .view-hdr h2{{font-size:0.85rem}}
+  .sec{{margin-bottom:12px}}
+  .sec-title{{font-size:0.62rem;margin-bottom:8px;padding-bottom:3px}}
+
+  .kpi-grid{{grid-template-columns:repeat(auto-fill,minmax(105px,1fr));gap:6px}}
+  .kpi{{padding:6px 8px}}
+  .kpi-val{{font-size:1rem}}
+  .kpi-lbl{{font-size:0.58rem}}
+  .kpi-sub{{font-size:0.6rem}}
+
+  .video-wrap video{{height:130px}}
+
+  /* En phone: 2 columnas todavía (en lo posible) */
+  .gauge-row{{gap:4px;grid-template-columns:repeat(2,1fr)}}
+  .gauge-box{{padding:4px;min-height:100px}}
+  .gauge-box > div{{min-height:85px}}
+  .gauge-title{{font-size:0.58rem}}
+
+  .ipo-big{{font-size:2rem}}
+  .ipo-hero{{padding:12px 10px}}
+  .ipo-comp-val{{font-size:0.9rem}}
+  .ipo-tbands{{grid-template-columns:1fr}}
+
+  table{{font-size:0.65rem}}
+  th,td{{padding:3px 4px}}
+
+  .panel{{padding:8px}}
+  .btn{{font-size:0.65rem;padding:4px 7px}}
+
+  /* El banner de productividad: más compacto */
+  #prod-banner{{padding:10px 12px !important}}
+  #prod-banner > div{{gap:8px !important;flex-wrap:wrap}}
+  #prod-banner-loss{{font-size:1rem !important;padding:4px 10px !important}}
+}}
 </style>
 </head>
 <body>
@@ -1039,11 +1181,14 @@ function _gauge(id, value, title, unit) {{
       ],
     }},
   }}];
-  const layout = {{ ...DARK_LAYOUT, margin:{{l:10,r:10,t:15,b:5}}, height:100 }};
+  // BUGFIX responsive: autosize + height por CSS, y config responsive:true
+  const layout = {{ ...DARK_LAYOUT, margin:{{l:8,r:8,t:12,b:4}},
+                    autosize:true, height:120 }};
+  const cfg = {{displayModeBar:false, responsive:true}};
   if (gaugeInstances[id]) {{
-    Plotly.react(id, data, layout, {{displayModeBar:false}});
+    Plotly.react(id, data, layout, cfg);
   }} else {{
-    Plotly.newPlot(id, data, layout, {{displayModeBar:false}});
+    Plotly.newPlot(id, data, layout, cfg);
     gaugeInstances[id] = true;
   }}
 }}
@@ -1155,8 +1300,16 @@ function switchView(name) {{
   const side = document.querySelector('.side-item[data-view="'+name+'"]');
   if (side) side.classList.add('active');
 
-  // Refrescar charts/gauges al entrar (Plotly resize)
-  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+  // BUGFIX responsive: forzar Plotly resize de todos los charts visibles
+  setTimeout(() => {{
+    window.dispatchEvent(new Event('resize'));
+    // Específicamente relayout todos los Plotly charts de la vista activa
+    if (view) {{
+      view.querySelectorAll('.js-plotly-plot').forEach(el => {{
+        try {{ Plotly.Plots.resize(el); }} catch(e) {{}}
+      }});
+    }}
+  }}, 120);
 
   // Render especificos por vista
   if (name === 'simulator') renderSimulators();
@@ -1165,6 +1318,15 @@ function switchView(name) {{
     setTimeout(() => window.MathJax.typesetPromise([view]).catch(e => console.warn('MathJax:', e)), 60);
   }}
 }}
+
+// BUGFIX responsive: relayout Plotly en cambio de viewport (device rotation, resize)
+window.addEventListener('resize', () => {{
+  const active = document.querySelector('.view.active');
+  if (!active) return;
+  active.querySelectorAll('.js-plotly-plot').forEach(el => {{
+    try {{ Plotly.Plots.resize(el); }} catch(e) {{}}
+  }});
+}});
 
 // ═══════════════════════════════════════════════════════════════
 // MODAL DE ALERTA CRITICA
@@ -2615,12 +2777,13 @@ def _idle_view(idle: Dict) -> str:
     iti_pct = idle.get('iti_pct', 0.0)
     prod_pct = 100 - iti_pct
 
-    # Badge de confianza (validación visual con YOLO)
+    # Badge de confianza (validación visual)
     conf_label = idle.get('confidence', None)
     conf_score = idle.get('confidence_score', 0.0)
-    iti_validated_pct = idle.get('iti_validated_pct', None)
+    iti_pct_imu_raw = idle.get('iti_pct_imu_raw', 0.0)
+    false_pos_n = idle.get('false_positives_n', 0)
+    false_pos_s = idle.get('false_positives_s', 0.0)
     disagreements_n = idle.get('disagreements_n', 0)
-    visual_activity_pct = idle.get('visual_activity_pct', 0.0)
 
     conf_colors = {
         'HIGH':   C['green'],
@@ -2631,26 +2794,28 @@ def _idle_view(idle: Dict) -> str:
     if conf_label:
         cc = conf_colors.get(conf_label, C['muted'])
         icon = '🟢' if conf_label == 'HIGH' else ('🟡' if conf_label == 'MEDIUM' else '🔴')
-        validated_note = ''
-        if iti_validated_pct is not None:
-            validated_note = (
-                f'<div style="color:{C["muted"]};font-size:.72rem;margin-top:4px">'
-                f'ITI validado por video: <b style="color:{cc};font-family:monospace">'
-                f'{iti_validated_pct:.1f}%</b></div>'
-            )
+        # Comparación IMU crudo vs ITI REAL
+        comparison_note = (
+            f'<div style="color:{C["muted"]};font-size:.72rem;margin-top:6px;line-height:1.5">'
+            f'IMU crudo reportaba: <s style="color:{C["red"]}">{iti_pct_imu_raw:.1f}%</s> → '
+            f'ITI real <b style="color:{cc};font-family:monospace">{iti_pct:.1f}%</b><br/>'
+            f'<span style="color:{C["muted"]};font-size:.68rem">'
+            f'Detectados {false_pos_n} falsos positivos del IMU ({false_pos_s:.0f}s descartados)'
+            f'</span></div>'
+        )
         conf_badge_html = f"""
         <div style="margin-top:14px;padding:10px 16px;background:rgba({_hex_to_rgb(cc)},.10);
-                    border:1px solid {cc};border-radius:8px;display:inline-block">
+                    border:1px solid {cc};border-radius:8px;display:inline-block;max-width:520px">
           <div style="display:flex;align-items:center;gap:10px;justify-content:center">
             <span style="font-size:1.2rem">{icon}</span>
             <span style="color:{cc};font-weight:700;letter-spacing:.05em;font-size:.85rem">
-              CONFIANZA {conf_label} · {conf_score*100:.0f}%
+              CONFIANZA {conf_label} · acuerdo {conf_score*100:.0f}%
             </span>
           </div>
           <div style="color:{C['muted']};font-size:.7rem;margin-top:4px">
-            Dual-source: IMU + validación visual YOLO
+            Dual-source: IMU + Optical Flow (cámara)
           </div>
-          {validated_note}
+          {comparison_note}
         </div>
         """
 
@@ -2920,49 +3085,51 @@ def _idle_view(idle: Dict) -> str:
 
         visual_block = f"""
         <div class="sec">
-          <div class="sec-title">Validación visual — Dual-source (IMU + YOLO)</div>
+          <div class="sec-title">Validación visual — Dual-source (IMU + Optical Flow)</div>
           <div class="panel" style="padding:14px">
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:14px">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px">
               <div>
-                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Confianza global</div>
+                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Confianza</div>
                 <div style="font-size:1.4rem;font-weight:700;color:{conf_colors.get(conf_label, C['muted'])};font-family:monospace">
                   {conf_label}
                 </div>
                 <div style="font-size:.68rem;color:{C['muted']}">
-                  {conf_score*100:.1f}% de validación
+                  acuerdo {conf_score*100:.1f}%
                 </div>
               </div>
               <div>
-                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Actividad visual</div>
-                <div style="font-size:1.4rem;font-weight:700;color:{C['blue']};font-family:monospace">
-                  {visual_activity_pct:.1f}%
+                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">ITI IMU crudo</div>
+                <div style="font-size:1.4rem;font-weight:700;color:{C['red']};font-family:monospace;text-decoration:line-through;opacity:.7">
+                  {iti_pct_imu_raw:.1f}%
                 </div>
-                <div style="font-size:.68rem;color:{C['muted']}">% de frames con actividad</div>
+                <div style="font-size:.68rem;color:{C['muted']}">con falsos positivos</div>
               </div>
               <div>
-                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Ocio validado</div>
+                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">ITI REAL</div>
                 <div style="font-size:1.4rem;font-weight:700;color:{C['green']};font-family:monospace">
-                  {idle.get('idle_validated_s', 0):.0f}s
+                  {iti_pct:.1f}%
                 </div>
                 <div style="font-size:.68rem;color:{C['muted']}">confirmado por video</div>
               </div>
               <div>
-                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Ocio disputado</div>
+                <div style="font-size:.68rem;color:{C['muted']};text-transform:uppercase">Falsos positivos</div>
                 <div style="font-size:1.4rem;font-weight:700;color:{C['yellow']};font-family:monospace">
-                  {idle.get('idle_disputed_s', 0):.0f}s
+                  {false_pos_n}
                 </div>
-                <div style="font-size:.68rem;color:{C['muted']}">requiere revisión</div>
+                <div style="font-size:.68rem;color:{C['muted']}">= {false_pos_s:.0f}s descartados</div>
               </div>
             </div>
             <div style="color:{C['muted']};font-size:.78rem;line-height:1.5">
-              <b style="color:{C['text']}">¿Qué es esto?</b> El IMU detecta movimiento mecánico de la pala.
-              YOLO valida visualmente si hay actividad minera en el video. Cuando ambas fuentes
-              <b style="color:{C['green']}">concuerdan</b>, la métrica tiene alta confianza. Cuando
-              <b style="color:{C['red']}">discrepan</b>, se flaguea para revisión.
+              <b style="color:{C['text']}">Insight clave</b>: el IMU reportaba ocio del
+              <b style="color:{C['red']}">{iti_pct_imu_raw:.1f}%</b>, pero al validar con optical flow
+              (cámara montada sobre la pala) descubrimos que {false_pos_n} eventos eran
+              <b style="color:{C['yellow']}">falsos positivos</b>. El ocio REAL es
+              <b style="color:{C['green']}">{iti_pct:.1f}%</b>. El IMU detecta "ausencia de movimiento mecánico"
+              pero no distingue entre waits reales y swings suaves.
             </div>
           </div>
 
-          {'<div class="panel" style="padding:0;overflow:hidden;margin-top:10px"><table><thead><tr><th>Ventana</th><th>Duración</th><th>Razón</th><th>Confianza</th><th>Video</th></tr></thead><tbody>' + wait_rows + '</tbody></table></div>' if wait_rows else ''}
+          {'<div class="panel" style="padding:0;overflow:auto;margin-top:10px"><table><thead><tr><th>Ventana</th><th>Duración</th><th>Razón</th><th>Confianza</th><th>Video</th></tr></thead><tbody>' + wait_rows + '</tbody></table></div>' if wait_rows else ''}
         </div>
         {disag_html}
         """

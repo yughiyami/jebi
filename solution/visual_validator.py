@@ -142,23 +142,93 @@ def enhance_idle_index(idle_index: Dict, validation: Dict) -> Dict:
     """
     Enriquece el idle_index original con la validación visual dual-source.
 
+    CAMBIO MAYOR: ahora la FUENTE DE VERDAD son los idle_periods del optical flow,
+    no los wait_events del IMU. El IMU tiene falsos positivos que inflaban el
+    ITI (~76%) cuando el ocio real es mucho menor (~3%).
+
+    El `iti_pct` principal se RECALCULA usando solo los idle_periods visuales.
+    El valor original del IMU se guarda como `iti_pct_imu_raw` para referencia.
+
     Agrega campos:
-      - verified_idle_s:       ocio confirmado por IMU+visual
-      - verified_iti_pct:      ITI validado (más bajo y confiable)
-      - imu_only_idle_s:       IMU marca ocio pero cámara se mueve (sospechoso)
-      - visual_only_idle_s:    cámara quieta pero IMU no marca wait
-      - agreement_pct:         % de acuerdo entre fuentes
-      - confidence:            HIGH | MEDIUM | LOW
-      - productivity_alerts:   alertas para operador
-      - disagreements:         lista para auditoría
+      - iti_pct:            ITI REAL (idle_periods visuales / duration) ← MÉTRICA PRINCIPAL
+      - iti_pct_imu_raw:    ITI que el IMU reportaba (con falsos positivos)
+      - real_idle_periods:  lista de los períodos idle confirmados (los 2 reales)
+      - real_idle_s:        suma de duraciones de períodos reales
+      - false_positives_s:  waits del IMU que el video NO confirma (tiempo)
+      - false_positives_n:  cantidad de waits que son falsos positivos
+      - agreement_pct:      % de acuerdo entre fuentes
+      - confidence:         HIGH | MEDIUM | LOW
+      - productivity_alerts: alertas para operador
     """
     if not idle_index or not validation:
         return idle_index or {}
 
     verified = validation.get('verified_idle', {})
+    motion_tl = validation.get('motion_timeline', {})
+
+    # ── Los períodos idle REALES son los del optical flow (visual confirmado) ─
+    real_periods = motion_tl.get('idle_periods', [])
+    real_idle_s = sum(p.get('duration_s', 0) for p in real_periods)
+
+    duration_s = idle_index.get('total_duration_s', 0)
+    iti_real = real_idle_s / duration_s if duration_s > 0 else 0.0
+
+    # ── Recalcular banda para el ITI REAL (mucho más bajo que el IMU crudo) ──
+    # Bandas del IDLE_BANDS de metrics.py
+    if iti_real < 0.15:
+        band, band_color, rec = 'OPTIMO', 'green', 'Operacion muy eficiente. Los tiempos de ocio son minimos.'
+    elif iti_real < 0.30:
+        band, band_color, rec = 'NORMAL', 'blue', 'Ocio dentro de rango esperado.'
+    elif iti_real < 0.50:
+        band, band_color, rec = 'CRITICO', 'yellow', 'Mucho tiempo sin producir. Revisar coordinacion.'
+    else:
+        band, band_color, rec = 'COMPROMETIDO', 'red', 'Intervencion urgente.'
+
+    # ── Calcular cuántos waits del IMU son FALSOS POSITIVOS ───────────────────
+    # Un wait del IMU es "real" si hay OVERLAP con algún idle_period visual
+    wait_confs = validation.get('wait_confidence', [])
+    false_pos_n = 0
+    false_pos_s = 0.0
+    real_waits = []
+    for wc in wait_confs:
+        # Verificar si este wait se solapa con algún idle_period visual
+        overlaps = False
+        for p in real_periods:
+            # Overlap si hay intersección
+            if wc['t_start'] <= p.get('t_end', 0) and wc['t_end'] >= p.get('t_start', 0):
+                overlaps = True
+                break
+        if overlaps:
+            real_waits.append(wc)
+        else:
+            false_pos_n += 1
+            false_pos_s += wc.get('duration_s', 0)
+
+    # ── Guardar el ITI del IMU crudo con otro nombre para referencia ──────────
+    iti_pct_imu_raw = idle_index.get('iti_pct', 0.0)
+    total_idle_imu_raw = idle_index.get('total_idle_s', 0.0)
 
     enhanced = dict(idle_index)
     enhanced.update({
+        # ── Métricas PRINCIPALES ahora son las visuales (fuente de verdad) ───
+        'iti':              round(iti_real, 3),
+        'iti_pct':          round(iti_real * 100, 1),
+        'total_idle_s':     round(real_idle_s, 1),
+        'band':             band,
+        'band_color':       band_color,
+        'recommendation':   rec,
+        'productive_s':     round(max(0.0, duration_s - real_idle_s), 1),
+        'ratio_prod_idle':  round((duration_s - real_idle_s) / real_idle_s, 2) if real_idle_s > 0 else -1,
+        'n_events':         len(real_periods),
+        # ── Datos del IMU original (para comparación y transparencia) ────────
+        'iti_pct_imu_raw':   round(iti_pct_imu_raw, 1),
+        'total_idle_imu_raw': round(total_idle_imu_raw, 1),
+        # ── Falsos positivos detectados ──────────────────────────────────────
+        'false_positives_n':  false_pos_n,
+        'false_positives_s':  round(false_pos_s, 1),
+        'real_idle_periods':  real_periods,
+        'real_waits_n':       len(real_waits),
+        # ── Métricas dual-source adicionales ─────────────────────────────────
         'verified_idle_s':      verified.get('verified_idle_s', 0.0),
         'verified_active_s':    verified.get('verified_active_s', 0.0),
         'imu_only_idle_s':      verified.get('imu_only_idle_s', 0.0),
@@ -173,5 +243,17 @@ def enhance_idle_index(idle_index: Dict, validation: Dict) -> Dict:
         'wait_confidence':      validation.get('wait_confidence', []),
         'disagreements':        validation.get('disagreements', []),
         'disagreements_n':      len(validation.get('disagreements', [])),
+        # Reemplazar top_waits con los períodos REALES (2 en nuestro caso)
+        'top_waits':            [
+            {
+                't_start':   p['t_start'],
+                't_end':     p['t_end'],
+                'duration':  p['duration_s'],
+                'reason':    'verified_idle',
+                'label':     f'Ocio real #{i+1} (confirmado por video)',
+                'pct_total': round(p['duration_s'] / duration_s * 100, 2) if duration_s > 0 else 0,
+            }
+            for i, p in enumerate(sorted(real_periods, key=lambda x: -x.get('duration_s', 0)))
+        ],
     })
     return enhanced
