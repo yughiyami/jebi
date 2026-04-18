@@ -2537,15 +2537,49 @@ def _ipo_view(ipo) -> str:
                 f'<div class="ipo-comp-lbl">{lbl}</div>'
                 f'</div>')
 
-    comps = ''.join([
+    # Detectar factor dominante (el más bajo = cuello de botella)
+    eta_T = getattr(ipo, 'eta_T', 0)
+    eta_F = getattr(ipo, 'eta_F', 0)
+    eta_M_speed = getattr(ipo, 'eta_M_speed', 0)
+    target_fill = getattr(ipo, 'target_fill', 0.85)
+    target_cycle_s = getattr(ipo, 'target_cycle_s', 28.0)
+
+    factors = {'η_T': eta_T, 'η_F': eta_F, 'η_M': eta_M_speed}
+    bottleneck = min(factors, key=factors.get)
+    bottleneck_val = factors[bottleneck]
+
+    # Highlight card if it's the bottleneck
+    def card_hl(sym, val, lbl, is_low):
+        border = f'border:2px solid {C["red"]}' if is_low else ''
+        sub = ' <b style="color:'+C['red']+'">⚠ cuello de botella</b>' if is_low else ''
+        return (f'<div class="ipo-comp-card" style="{border}">'
+                f'<div class="ipo-comp-sym">{sym}</div>'
+                f'<div class="ipo-comp-val">{val}</div>'
+                f'<div class="ipo-comp-lbl">{lbl}{sub}</div>'
+                f'</div>')
+
+    # Componentes OEE (los 3 que definen el score)
+    comps_oee = ''.join([
+        card_hl('η_T', f'{eta_T:.3f}',
+                f'Availability: productivo/total ({eta_T*100:.1f}%)',
+                bottleneck == 'η_T'),
+        card_hl('η_F', f'{eta_F:.3f}',
+                f'Quality: fill {ipo.eta_R:.2f}/{target_fill:.2f} ({eta_F*100:.1f}%)',
+                bottleneck == 'η_F'),
+        card_hl('η_M', f'{eta_M_speed:.3f}',
+                f'Performance: {target_cycle_s:.0f}s/{ipo.t_ciclo:.1f}s ({eta_M_speed*100:.1f}%)',
+                bottleneck == 'η_M'),
+        card('α_W',  f'{ipo.alpha_W:.3f}',
+             f'Losses: desperdicios ({ipo.alpha_W*100:.1f}%)'),
+    ])
+
+    # Componentes legacy (referencia)
+    comps_ref = ''.join([
         card('V_nom', f'{ipo.v_nom:.0f} m³',      'Volumen nominal balde'),
-        card('η_R',   f'{ipo.eta_R:.3f}',         f'Fill factor ({ipo.eta_R*100:.1f}%)'),
-        card('η_M',   f'{ipo.eta_M:.3f}',         f'Eficiencia maniobra ({ipo.eta_M*100:.1f}%)'),
+        card('η_R',   f'{ipo.eta_R:.3f}',         f'Fill factor raw ({ipo.eta_R*100:.1f}%)'),
         card('C_T',   f'{ipo.c_T:.1f}',           'Ciclos por turno'),
         card('T_ciclo', f'{ipo.t_ciclo:.1f} s',   'Tiempo medio de ciclo'),
         card('DA',    f'{ipo.DA:.3f}',            'Disponibilidad de equipo'),
-        card('α_W',   f'{ipo.alpha_W:.3f}',       f'Desperdicios ({ipo.alpha_W*100:.1f}%)'),
-        card('α_DE',  f'{ipo.alpha_DE:.3f}',      f'Desgaste equipos ({ipo.alpha_DE*100:.1f}%)'),
     ])
 
     # Desglose del tiempo de ciclo
@@ -2568,10 +2602,10 @@ def _ipo_view(ipo) -> str:
                 f'</div>')
 
     bands = ''.join([
-        band_cell('OPTIMA',       0.85, 1.00, C['green'],  'Mantener estandares',         ipo.band=='OPTIMA'),
-        band_cell('NORMAL',       0.65, 0.85, C['blue'],   'Mejoras puntuales',           ipo.band=='NORMAL'),
-        band_cell('CRITICA',      0.45, 0.65, C['yellow'], 'Revisar η_M o α_DE',          ipo.band=='CRITICA'),
-        band_cell('COMPROMETIDA', 0.00, 0.45, C['red'],    'Intervencion inmediata',      ipo.band=='COMPROMETIDA'),
+        band_cell('OPTIMA',       0.60, 1.00, C['green'],  'Mantener estandares',         ipo.band=='OPTIMA'),
+        band_cell('NORMAL',       0.40, 0.60, C['blue'],   'Revisar factor mas bajo',     ipo.band=='NORMAL'),
+        band_cell('CRITICA',      0.20, 0.40, C['yellow'], 'Identificar cuello de botella', ipo.band=='CRITICA'),
+        band_cell('COMPROMETIDA', 0.00, 0.20, C['red'],    'Intervencion inmediata',      ipo.band=='COMPROMETIDA'),
     ])
 
     notes_html = ''
@@ -2582,7 +2616,7 @@ def _ipo_view(ipo) -> str:
     return f"""
     <div class="ipo-hero">
       <div style="color:{C['muted']};font-size:.75rem;text-transform:uppercase;letter-spacing:.1em">
-        Indice de Productividad Operativa
+        OEE · Overall Equipment Effectiveness
       </div>
       <div class="ipo-big" style="color:{band_color}">{ipo.ipo:.3f}</div>
       <div class="ipo-band" style="background:{band_color};color:#000">
@@ -2591,22 +2625,32 @@ def _ipo_view(ipo) -> str:
       <div style="color:{C['muted']};font-size:.85rem;margin-top:10px">
         {ipo.recommendation}
       </div>
+      <div style="margin-top:14px;color:{C['muted']};font-size:.72rem">
+        Cuello de botella: <b style="color:{C['red']}">{bottleneck} = {bottleneck_val:.3f}</b>
+        · Aumentar este factor es donde más ganás productividad.
+      </div>
     </div>
 
     <div class="sec">
-      <div class="sec-title">Formula Maestra</div>
+      <div class="sec-title">Formula OEE</div>
       <div class="ipo-formula">
-        $$ IPO = \\frac{{V_{{nom}} \\cdot \\eta_R \\cdot \\eta_M \\cdot C_T}}{{T_{{ciclo}}}} \\cdot (1 - \\alpha_W) \\cdot (1 - \\alpha_{{DE}}) $$
+        $$ OEE = \\underbrace{{\\eta_T}}_{{\\text{{Availability}}}} \\cdot \\underbrace{{\\eta_F}}_{{\\text{{Quality}}}} \\cdot \\underbrace{{\\eta_M}}_{{\\text{{Performance}}}} \\cdot (1 - \\alpha_W) $$
       </div>
       <div class="ipo-formula" style="font-size:.85rem">
         Con los valores actuales:
-        $$ IPO = \\frac{{{ipo.v_nom:.0f} \\cdot {ipo.eta_R:.3f} \\cdot {ipo.eta_M:.3f} \\cdot {ipo.c_T:.1f}}}{{{ipo.t_ciclo:.1f}}} \\cdot (1 - {ipo.alpha_W:.3f}) \\cdot (1 - {ipo.alpha_DE:.3f}) = {ipo.ipo:.3f} $$
+        $$ OEE = {eta_T:.3f} \\cdot {eta_F:.3f} \\cdot {eta_M_speed:.3f} \\cdot (1 - {ipo.alpha_W:.3f}) = {ipo.ipo:.3f} $$
       </div>
     </div>
 
     <div class="sec">
-      <div class="sec-title">Componentes actuales</div>
-      <div class="ipo-components">{comps}</div>
+      <div class="sec-title">Los 3 factores OEE + losses</div>
+      <div class="ipo-components">{comps_oee}</div>
+      <div style="color:{C['muted']};font-size:.72rem;margin-top:10px;line-height:1.5">
+        <b>η_T (Availability)</b>: disponibilidad productiva — tiempo operando vs total.<br/>
+        <b>η_F (Quality)</b>: calidad de carga — fill factor vs target ({target_fill*100:.0f}% óptimo).<br/>
+        <b>η_M (Performance)</b>: velocidad — benchmark de ciclo {target_cycle_s:.0f}s vs real.<br/>
+        <b>α_W (Losses)</b>: desperdicios por derrames / overfill.
+      </div>
     </div>
 
     <div class="sec">
@@ -2618,20 +2662,19 @@ def _ipo_view(ipo) -> str:
     </div>
 
     <div class="sec">
-      <div class="sec-title">Interpretacion por bandas</div>
+      <div class="sec-title">Interpretacion por bandas (escala OEE)</div>
       <div class="ipo-tbands">{bands}</div>
       {notes_html}
     </div>
 
     <div class="sec">
-      <div class="sec-title">Volumen y factores de perdida</div>
-      <div class="glossary">
+      <div class="sec-title">Componentes de referencia (legacy + contexto)</div>
+      <div class="ipo-components">{comps_ref}</div>
+      <div class="glossary" style="margin-top:10px">
         <dl>
           <dt>V_ef (efectivo)</dt><dd>{ipo.v_ef:.1f} m³ por cucharada = {ipo.v_nom:.0f} × {ipo.eta_R:.3f}</dd>
           <dt>V_cargado total</dt><dd>{ipo.v_cargado:.1f} m³ movidos en la ventana</dd>
-          <dt>V_desperdiciado</dt><dd>{ipo.v_desperdiciado:.1f} m³ perdidos (underfill + derrames)</dd>
-          <dt>T_mantenimiento</dt><dd>{ipo.t_mant:.1f} s inactivo por mantenimiento</dd>
-          <dt>T_turno</dt><dd>{ipo.t_turno:.0f} s (turno estandar 8h)</dd>
+          <dt>V_desperdiciado</dt><dd>{ipo.v_desperdiciado:.1f} m³ perdidos (derrames + overfill)</dd>
         </dl>
       </div>
     </div>

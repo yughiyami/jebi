@@ -48,11 +48,28 @@ T_TURNO_S  = 8 * 3600.0    # Duracion estandar del turno minero (8h = 28800s)
 
 # ─── INTERPRETACION IPO ───────────────────────────────────────────────────────
 
+# Modelo OEE (Overall Equipment Effectiveness) adaptado:
+#   OEE = η_T · η_F · η_M_speed · (1 - α_W)
+#
+# Donde:
+#   η_T       = (T_total - T_ocio) / T_total              → Availability
+#   η_F       = fill_factor / TARGET_FILL_FACTOR          → Quality
+#   η_M_speed = TARGET_CYCLE_S / T_ciclo                  → Performance
+#   α_W       = V_desperdiciado / V_cargado               → Loss factor
+#
+# Cada componente está en 0-1 y compara contra un BENCHMARK REAL, no contra un
+# ideal teórico. Esto evita que η_M quede artificialmente aplastado cuando se
+# divide swing_time por un t_ciclo inflado con waits inter-ciclo.
+
+TARGET_FILL_FACTOR = 0.85    # 85% fill = óptimo para EX-5600 bucket
+TARGET_CYCLE_S     = 28.0    # benchmark de ciclo completo en segundos
+
+# Bandas ajustadas a escala OEE (los productos de 3 factores <=1 son más bajos)
 IPO_BANDS = [
-    (0.85, 1.01,  'OPTIMA',        'green',  'Operacion optima. Mantener estandares.'),
-    (0.65, 0.85,  'NORMAL',        'blue',   'Operacion normal, aplicar mejoras puntuales.'),
-    (0.45, 0.65,  'CRITICA',       'yellow', 'Ineficiencias criticas. Revisar η_M (maniobra) o α_DE (desgaste).'),
-    (0.00, 0.45,  'COMPROMETIDA',  'red',    'Operacion comprometida. Intervencion inmediata requerida.'),
+    (0.60, 1.01,  'OPTIMA',        'green',  'OEE optimo. Mantener estandares.'),
+    (0.40, 0.60,  'NORMAL',        'blue',   'OEE normal. Revisar el factor mas bajo entre η_T, η_F, η_M.'),
+    (0.20, 0.40,  'CRITICA',       'yellow', 'OEE critico. Identificar cuello de botella dominante.'),
+    (0.00, 0.20,  'COMPROMETIDA',  'red',    'OEE comprometido. Intervencion inmediata requerida.'),
 ]
 
 
@@ -68,51 +85,62 @@ def classify_ipo(ipo: float) -> Dict:
 
 @dataclass
 class IPOResult:
-    """Resultado completo del calculo IPO con todos los componentes."""
+    """Resultado OEE (mantiene nombre IPO por compat).
 
-    # Valor principal
+    Formula:  OEE = η_T · η_F · η_M_speed · (1 - α_W)
+    """
+
+    # Valor principal (OEE)
     ipo:              float
 
-    # Componentes numerador
+    # ── Componentes OEE nuevos ─────────────────────────────────────────────
+    eta_T:            float       # η_T: availability  (productive / total)
+    eta_F:            float       # η_F: fill vs target  (fill / 0.85)
+    eta_M_speed:      float       # η_M: speed vs benchmark  (28s / t_ciclo)
+
+    # ── Componentes legacy (para referencia / trazabilidad) ────────────────
     v_nom:            float       # Volumen nominal balde (m³)
-    eta_R:            float       # Fill factor (V_real/V_nom)  0-1
-    eta_M:            float       # Eficiencia maniobra          0-1
+    eta_R:            float       # Fill factor raw (0-1)
+    eta_M:            float       # η_M legacy (swing/t_ciclo)
     c_T:              float       # Ciclos por turno estimados
 
     # Tiempo de ciclo
-    t_ciclo:          float       # Tiempo promedio ciclo (s)
-    t_pos_C:          float       # Posicionamiento carga (s)
-    t_carga:          float       # Tiempo de carga/DIG (s)
-    t_viaje_c:        float       # Swing cargado (s)
-    t_desc:           float       # Descarga (s)
-    t_pos_D:          float       # Posicionamiento descarga (s)
-    t_viaje_v:        float       # Swing vacio / retorno (s)
+    t_ciclo:          float
+    t_pos_C:          float
+    t_carga:          float
+    t_viaje_c:        float
+    t_desc:           float
+    t_pos_D:          float
+    t_viaje_v:        float
 
     # Disponibilidad
-    t_turno:          float       # T_turno usado (s)
-    DA:               float       # Disponibilidad equipo (0-1)
+    t_turno:          float
+    DA:               float
 
     # Factores de perdida
-    alpha_W:          float       # Desperdicios (0-1)
-    alpha_DE:         float       # Desgaste equipos (0-1)
-    v_desperdiciado:  float       # V perdido (m³)
-    v_cargado:        float       # V cargado total (m³)
-    t_mant:           float       # Tiempo en mantenimiento (s)
+    alpha_W:          float
+    alpha_DE:         float
+    v_desperdiciado:  float
+    v_cargado:        float
+    t_mant:           float
 
-    # Derivados de lectura
-    v_ef:             float       # Volumen efectivo V_nom * η_R
-    band:             str         # OPTIMA / NORMAL / CRITICA / COMPROMETIDA
+    # Derivados
+    v_ef:             float
+    band:             str
     band_color:       str
     recommendation:   str
 
-    # ── Validación visual (dual-source) ─────────────────────────────────────
-    ipo_validated:          float = 0.0   # IPO ajustado por validación visual
-    visual_agreement_pct:   float = 0.0   # % acuerdo IMU↔cámara (0-100)
-    confidence:             str   = 'N/A' # HIGH | MEDIUM | LOW
-    eta_M_validated:        float = 0.0   # eta_M corregido por motion visual
-    # Reduce si hay mucho tiempo donde cámara NO ve movimiento durante cycles
+    # Validación visual (dual-source)
+    ipo_validated:          float = 0.0
+    visual_agreement_pct:   float = 0.0
+    confidence:             str   = 'N/A'
+    eta_M_validated:        float = 0.0
 
-    # Debug / auditoria
+    # Benchmarks usados
+    target_fill:      float = TARGET_FILL_FACTOR
+    target_cycle_s:   float = TARGET_CYCLE_S
+
+    # Debug
     notes:            List[str] = field(default_factory=list)
 
 
@@ -146,7 +174,8 @@ def compute_ipo(cycles, wait_events, alerts, transport, metrics,
     if not full_cycles:
         notes.append('Sin ciclos completos; IPO no calculable.')
         return IPOResult(
-            ipo=0.0, v_nom=V_NOM_M3, eta_R=0, eta_M=0, c_T=0,
+            ipo=0.0, eta_T=0, eta_F=0, eta_M_speed=0,
+            v_nom=V_NOM_M3, eta_R=0, eta_M=0, c_T=0,
             t_ciclo=0, t_pos_C=0, t_carga=0, t_viaje_c=0,
             t_desc=0, t_pos_D=0, t_viaje_v=0,
             t_turno=t_turno_s, DA=0,
@@ -233,31 +262,49 @@ def compute_ipo(cycles, wait_events, alerts, transport, metrics,
     # ── Volumen efectivo ──────────────────────────────────────────────────────
     v_ef = V_NOM_M3 * eta_R
 
-    # ── IPO FORMULA MAESTRA (normalizado 0-1) ─────────────────────────────────
-    # La formula teorica da una "productividad" en m³/s² (unidades raras).
-    # Para normalizar a 0-1 usamos como referencia la produccion IDEAL
-    # donde η_R=η_M=DA=1, α_W=α_DE=0. Eso seria:
-    #   IPO_ideal = V_nom * 1 * 1 * (T_turno/T_ciclo) / T_ciclo * 1 * 1
-    #             = V_nom * T_turno / T_ciclo²
-    # Entonces:
-    #   IPO = η_R * η_M * DA * (1-α_W) * (1-α_DE)   ← PROXY LIMPIO equivalente
+    # ── OEE FORMULA (Overall Equipment Effectiveness) ─────────────────────────
+    # Reemplaza el IPO legacy que aplastaba η_M por dividir swing/t_ciclo inflado.
     #
-    # Usamos el proxy directamente (mas robusto, equivalente matematicamente
-    # cuando se normaliza).
-    ipo = eta_R * eta_M * DA * (1 - alpha_W) * (1 - alpha_DE)
+    # OEE = η_T · η_F · η_M_speed · (1 - α_W)
+    #
+    # Cada factor compara contra un BENCHMARK real:
+    #   η_T  = tiempo productivo / tiempo total               (availability)
+    #   η_F  = fill_factor_real / TARGET_FILL_FACTOR (0.85)   (quality)
+    #   η_M  = TARGET_CYCLE_S (28s) / t_ciclo_real            (performance)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # η_T (availability): cuánto del tiempo fue productivo
+    total_wait_s = sum(w.duration_s for w in wait_events)
+    if metrics.total_duration_s > 0:
+        eta_T = (metrics.total_duration_s - total_wait_s) / metrics.total_duration_s
+    else:
+        eta_T = 0.0
+    eta_T = float(np.clip(eta_T, 0.0, 1.0))
+
+    # η_F (quality): fill vs target óptimo
+    eta_F = float(np.clip(eta_R / TARGET_FILL_FACTOR, 0.0, 1.0))
+
+    # η_M_speed (performance): velocidad de ciclo vs benchmark
+    eta_M_speed = float(np.clip(TARGET_CYCLE_S / max(t_ciclo, 1.0), 0.0, 1.0))
+
+    # OEE final
+    ipo = eta_T * eta_F * eta_M_speed * (1 - alpha_W)
     ipo = float(np.clip(ipo, 0.0, 1.0))
 
     if not np.isfinite(ipo):
         ipo = 0.0
-        notes.append('IPO calculado como 0 por valores no finitos.')
+        notes.append('OEE calculado como 0 por valores no finitos.')
+
+    notes.append(f'OEE components: eta_T={eta_T:.3f}, eta_F={eta_F:.3f}, '
+                  f'eta_M={eta_M_speed:.3f}, alpha_W={alpha_W:.3f}')
 
     band = classify_ipo(ipo)
 
     # ── VALIDACIÓN VISUAL (dual-source) ──────────────────────────────────────
-    # Si tenemos motion data, ajustamos eta_M y el IPO global.
-    # La idea es: si durante los cycles la cámara confirma movimiento,
-    # eta_M es real. Si no, hay que descontar.
-    eta_M_val = eta_M
+    # Si tenemos motion data, ajustamos el OEE con validación visual.
+    # Penalizamos η_M_speed si el motion visual no confirma actividad durante
+    # los ciclos (los waits que IMU no detectó pero cámara sí → ciclos "ficticios").
+    eta_M_val = eta_M_speed
     ipo_val = ipo
     agreement_pct = 0.0
     confidence = 'N/A'
@@ -267,29 +314,27 @@ def compute_ipo(cycles, wait_events, alerts, transport, metrics,
         agreement_pct = float(verified.get('agreement_pct', 0.0))
         confidence    = verified.get('confidence', 'N/A')
 
-        # eta_M_validated: eta_M * fraction of cycles where motion was confirmed
-        # cycle_confidence = list[{cycle_id, motion_score, confidence, ...}]
         cycle_confs = visual_validation.get('cycle_confidence', [])
         if cycle_confs:
-            # Fraction of cycles con HIGH confidence visual
             high_conf_cycles = sum(1 for cc in cycle_confs if cc.get('confidence') == 'HIGH')
             total_cycles_val = len(cycle_confs)
             if total_cycles_val > 0:
                 motion_confirmation_ratio = high_conf_cycles / total_cycles_val
-                # Ponderamos: eta_M * motion_confirmation
-                # Si 100% de cycles están confirmados visualmente → eta_M_val = eta_M
-                # Si 50% → eta_M_val = eta_M * 0.75 (promedio entre eta_M y eta_M*0.5)
-                eta_M_val = eta_M * (0.5 + 0.5 * motion_confirmation_ratio)
+                # Ajustar η_M_speed según confirmación visual
+                eta_M_val = eta_M_speed * (0.5 + 0.5 * motion_confirmation_ratio)
                 eta_M_val = float(np.clip(eta_M_val, 0.0, 1.0))
 
-        # ipo_validated: IPO con eta_M ajustado
-        ipo_val = eta_R * eta_M_val * DA * (1 - alpha_W) * (1 - alpha_DE)
+        # OEE validado con η_M ajustado
+        ipo_val = eta_T * eta_F * eta_M_val * (1 - alpha_W)
         ipo_val = float(np.clip(ipo_val, 0.0, 1.0))
 
-        notes.append(f'Validación visual dual-source aplicada (acuerdo {agreement_pct:.1f}%).')
+        notes.append(f'Validacion visual aplicada (acuerdo {agreement_pct:.1f}%).')
 
     return IPOResult(
         ipo=round(ipo, 3),
+        eta_T=round(eta_T, 3),
+        eta_F=round(eta_F, 3),
+        eta_M_speed=round(eta_M_speed, 3),
         v_nom=V_NOM_M3,
         eta_R=round(eta_R, 3),
         eta_M=round(eta_M, 3),
@@ -316,6 +361,8 @@ def compute_ipo(cycles, wait_events, alerts, transport, metrics,
         eta_M_validated=round(eta_M_val, 3),
         visual_agreement_pct=round(agreement_pct, 1),
         confidence=confidence,
+        target_fill=TARGET_FILL_FACTOR,
+        target_cycle_s=TARGET_CYCLE_S,
         notes=notes,
     )
 
@@ -323,15 +370,25 @@ def compute_ipo(cycles, wait_events, alerts, transport, metrics,
 # ─── DESCRIPCION TEXTUAL PARA EL DASHBOARD ────────────────────────────────────
 
 IPO_DEFINITIONS = {
-    'IPO':      ('Indice de Productividad Operativa',
-                 'Metrica maestra que combina volumen efectivo, eficiencia de maniobra, '
-                 'ciclos por turno y factores de perdida. Rango 0-1.'),
+    'IPO':      ('OEE — Overall Equipment Effectiveness',
+                 'Metrica maestra en escala 0-1 compuesta por 3 factores independientes: '
+                 'Availability (η_T) × Quality (η_F) × Performance (η_M) × (1 - Losses).'),
+    'eta_T':    ('η_T — Availability (disponibilidad productiva)',
+                 'Fraccion del tiempo total que fue productivo (no ocio). '
+                 'η_T = (T_total - T_ocio) / T_total.'),
+    'eta_F':    ('η_F — Quality (calidad de carga)',
+                 f'Fill factor real vs target optimo ({TARGET_FILL_FACTOR*100:.0f}%). '
+                 f'η_F = fill_factor / {TARGET_FILL_FACTOR:.2f}.'),
+    'eta_M_speed': ('η_M — Performance (velocidad vs benchmark)',
+                 f'Velocidad de ciclo real vs benchmark de {TARGET_CYCLE_S:.0f}s. '
+                 f'η_M = {TARGET_CYCLE_S:.0f} / T_ciclo_real.'),
     'V_nom':    ('Volumen nominal del balde',
                  f'Capacidad teorica del balde EX-5600 = {V_NOM_M3} m³.'),
-    'eta_R':    ('η_R — Fill Factor de recoleccion',
-                 'Fraccion del balde realmente lleno por cucharada. η_R = V_real / V_nom.'),
-    'eta_M':    ('η_M — Eficiencia de maniobra',
-                 'Tiempo productivo de swing dividido por el tiempo total del ciclo.'),
+    'eta_R':    ('η_R — Fill Factor raw (referencia)',
+                 'Fraccion del balde realmente lleno por cucharada. η_R = V_real / V_nom. '
+                 'Usado para calcular η_F.'),
+    'eta_M':    ('η_M legacy (referencia)',
+                 'Fracción de swing / t_ciclo. Sustituido por η_M_speed en OEE.'),
     'C_T':      ('Ciclos por turno',
                  'Estimacion de ciclos ejecutables en un turno de 8h dada la disponibilidad. '
                  'C_T = (T_turno · DA) / T_ciclo.'),
